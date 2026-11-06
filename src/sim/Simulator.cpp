@@ -1,4 +1,4 @@
-#include "Simulator.h"
+﻿#include "Simulator.h"
 
 #include "Rng.h"
 
@@ -110,7 +110,7 @@ private:
         if (t.kind == MaterialKind::Powder) return 0.25f; // squeezing through grains is slow
         if (t.kind != MaterialKind::Liquid) return 1.0f;
         const float diff = (m.density - t.density) / m.density;
-        return std::clamp(diff * 2.0f, 0.05f, 1.0f) * (1.0f - 0.8f * t.viscosity);
+        return std::clamp(diff * 3.0f, 0.05f, 1.0f) * (1.0f - 0.8f * t.viscosity);
     }
 
     // Fall straight down up to vy pixels. Returns the cell's new position
@@ -122,12 +122,19 @@ private:
         if (static_cast<int>(rng_.below(kVelOne)) < (vy & (kVelOne - 1))) ++steps;
         steps = std::max(steps, 1);
 
+        // A resting grain does not drop into a hole its lower neighbour left
+        // this very tick: otherwise a wall of powder only erodes one grain per
+        // tick from its base (the whole face just shuffles down) and stands
+        // like a bell instead of collapsing. Falling grains still stream.
+        const bool resting = c->vy == 0 && m.kind == MaterialKind::Powder;
+
         bool moved = false, inLiquid = false;
         for (int s = 0; s < steps; ++s) {
             Cell* below = at(x, y + 1);
             if (!below) break;
             const Material& t = mats_[below->material];
             if (!canDisplace(m, t, 1)) break;
+            if (resting && s == 0 && below->stamp == stamp_) { wake(x, y); break; }
             if (t.kind == MaterialKind::Liquid || t.kind == MaterialKind::Powder) {
                 inLiquid = true;
                 if (rng_.unit() >= sinkChance(m, t)) { wake(x, y); break; }
@@ -199,6 +206,19 @@ private:
                 swapCells(c, x, y, at(x + d * dist, y), x + d * dist, y);
                 return;
             }
+        }
+        // nowhere open: a denser liquid pushes sideways under a lighter
+        // neighbour (water slides under oil instead of standing beside it)
+        for (int k = 0; k < 2; ++k, d = -d) {
+            Cell* t = at(x + d, y);
+            if (!t) continue;
+            const Material& tm = mats_[t->material];
+            if (tm.kind != MaterialKind::Liquid || tm.density >= m.density) continue;
+            if (rng_.unit() < sinkChance(m, tm)) {
+                swapCells(c, x, y, t, x + d, y);
+                return;
+            }
+            wake(x, y);
         }
     }
 

@@ -27,26 +27,27 @@ void demo(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     const MaterialId syrup = mats.idOf("amber_syrup"), metal = mats.idOf("quickmetal");
     const MaterialId steam = mats.idOf("steam"), murk = mats.idOf("murk");
 
-    // floor and a basin
-    fillRect(w, bedrock, X, Y + H - 8, X + W - 1, Y + H - 1, rng);
-    const int bx0 = X + W / 2 - 120, bx1 = X + W / 2 + 120, by = Y + H - 9;
-    fillRect(w, slate, bx0, by - 80, bx0 + 5, by, rng);
-    fillRect(w, slate, bx1 - 5, by - 80, bx1, by, rng);
-    // ledges
-    fillRect(w, slate, X + 40, Y + H / 3, X + 200, Y + H / 3 + 5, rng);
-    fillRect(w, slate, X + W - 220, Y + H / 2, X + W - 60, Y + H / 2 + 5, rng);
+    // laid out in the 640x360 box at the bottom centre of the world, where the app's camera starts
+    const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
+    auto rect = [&](MaterialId m, int x0, int y0, int x1, int y1) { fillRect(w, m, vx + x0, vy + y0, vx + x1, vy + y1, rng); };
 
-    // liquids poured into the basin from above: they sort themselves
-    fillRect(w, oil, bx0 + 10, Y + 40, bx0 + 70, Y + 70, rng);
-    fillRect(w, water, bx0 + 80, Y + 40, bx0 + 150, Y + 80, rng);
-    fillRect(w, metal, bx0 + 160, Y + 50, bx0 + 180, Y + 60, rng);
-    fillRect(w, syrup, X + 60, Y + H / 3 - 30, X + 110, Y + H / 3 - 1, rng);
-    // powders
-    fillRect(w, sand, X + 130, Y + 20, X + 180, Y + H / 3 - 1, rng);
-    fillRect(w, grit, X + W - 160, Y + 30, X + W - 120, Y + H / 2 - 1, rng);
-    // gases
-    fillRect(w, steam, X + W / 2 - 20, Y + H - 40, X + W / 2 + 20, Y + H - 20, rng);
-    fillRect(w, murk, X + W - 200, Y + 10, X + W - 170, Y + 30, rng);
+    fillRect(w, bedrock, X, Y + H - 8, X + W - 1, Y + H - 1, rng); // floor
+    rect(slate, 200, 250, 205, 351);   // basin walls
+    rect(slate, 440, 250, 445, 351);
+    rect(slate, 30, 150, 170, 155);    // left ledge
+    rect(slate, 480, 200, 620, 205);   // right ledge
+
+    // liquids poured into the basin from above: they sort themselves by density
+    rect(oil, 250, 70, 320, 115);
+    rect(water, 330, 50, 430, 125);
+    rect(metal, 300, 20, 320, 35);
+    rect(grit, 215, 20, 245, 60);
+    // a sand pile and a syrup blob on the ledges
+    rect(sand, 60, 50, 130, 149);
+    rect(syrup, 510, 150, 570, 199);
+    // gases: steam rises out of the bottom corner, murk sinks onto the right ledge
+    rect(steam, 470, 300, 540, 340);
+    rect(murk, 560, 20, 620, 50);
 }
 
 void churn(World& w, const MaterialRegistry& mats, std::uint64_t seed) {

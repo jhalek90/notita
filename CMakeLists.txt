@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+﻿cmake_minimum_required(VERSION 3.24)
 project(notita LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -50,7 +50,7 @@ endif()
 
 if(NOTITA_BUILD_APP)
     include(cmake/Dependencies.cmake)
-    add_executable(notita WIN32
+    add_executable(notita
         src/app/main.cpp
         src/app/Renderer.cpp
         src/app/App.cpp

@@ -362,3 +362,49 @@ TEST_CASE(brush_place_replace_erase) {
         CHECK(any);
     }
 }
+
+TEST_CASE(sand_wall_collapses_instead_of_standing) {
+    // A 71x100 block on a ledge must slump into a cone. Before the
+    // "fresh hole" rule its faces stayed vertical down to y = 124 (a bell).
+    Fixture f(4, 3);
+    f.fill("stone", 30, 150, 170, 155);
+    f.fill("sand", 60, 50, 130, 149);
+    f.run(400);
+    auto edges = [&](int y, int& l, int& r) {
+        l = -1; r = -1;
+        for (int x = 0; x < 256; ++x) if (f.at(x, y) == f.id("sand")) { if (l < 0) l = x; r = x; }
+    };
+    int l, r;
+    edges(66, l, r);
+    CHECK(r - l < 40);        // narrow near the top
+    edges(122, l, r);
+    CHECK(l < 52 && r > 138); // faces moved out at two-thirds height
+    edges(146, l, r);
+    CHECK(l < 40 && r > 150); // wide base
+}
+TEST_CASE(water_slides_under_oil) {
+    // side by side in a closed box: water must end up under the oil
+    Fixture f(2, 2);
+    f.fill("stone", 20, 40, 20, 120);
+    f.fill("stone", 100, 40, 100, 120);
+    f.fill("stone", 20, 121, 100, 121);
+    f.fill("oil", 21, 60, 60, 120);
+    f.fill("water", 61, 60, 99, 120);
+    f.run(2000);
+    int misplaced = 0; // water pixels with oil anywhere below them
+    for (int x = 21; x < 100; ++x) {
+        bool oilBelow = false;
+        for (int y = 120; y >= 40; --y) {
+            if (f.at(x, y) == f.id("oil")) oilBelow = true;
+            if (f.at(x, y) == f.id("water") && oilBelow) ++misplaced;
+        }
+    }
+    int lo = 1 << 30, hi = -1; // the oil/water interface should be (nearly) flat
+    for (int x = 21; x < 100; ++x) {
+        int y = 40;
+        while (y <= 120 && f.at(x, y) != f.id("water")) ++y;
+        lo = std::min(lo, y); hi = std::max(hi, y);
+    }
+    CHECK(misplaced <= 10);
+    CHECK(hi - lo <= 8);
+}
