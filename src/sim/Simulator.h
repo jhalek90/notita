@@ -53,6 +53,12 @@ struct SimParams {
     float splashChance = 0.7f;   // chance per candidate surface pixel to fly
     float mixRate = 0.1f;        // chance per tick a miscible liquid swaps with a different miscible neighbour
     int   mixSteps = 48;         // swaps a pixel may take part in before it counts as blended (Cell::aux)
+    // #477: grains keep their speed between ticks, queue behind moving grains instead of
+    // stopping dead, and turn a landing into sideways roll (false = the phase 1 rule)
+    bool  smoothPowder = true;
+    // #477: resting liquids only flow sideways on a flat surface with momentum or as a
+    // lone drop, so a calm pool's top row doesn't flicker (false = the phase 1 rule)
+    bool  calmLiquid = true;
 };
 
 // Per-material values the tick needs, precomputed from the registry.

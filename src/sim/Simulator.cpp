@@ -148,6 +148,7 @@ private:
     // Fall straight down up to vy pixels. Returns the cell's new position
     // through (x, y, c) and whether it moved.
     bool fall(int& x, int& y, Cell*& c, const Material& m) {
+        if (params_.smoothPowder && m.kind == MaterialKind::Powder) return fallGrain(x, y, c, m);
         int vy = c->vy + static_cast<int>(params_.gravity * m.gravity);
         vy = std::clamp(vy, 0, m.maxFall * kVelOne);
         int steps = vy >> 8;
@@ -185,6 +186,148 @@ private:
             if (below && !(below->flags & kFlagBody) && !canDisplace(m, mats_[below->material], 1)) splash(x, y, c, m, vy, *below);
         }
         return moved;
+    }
+
+    // ------------------------------------------------------- smooth grains
+    // (SimParams::smoothPowder, #477). The phase 1 rule stopped a grain dead
+    // (vy = 0) whenever the cell under it was taken, even by a grain that was
+    // itself still falling. A packed stream then stalled as a whole the tick
+    // its front landed and restarted from rest, so it came down in steps; and
+    // at every border where the upper chunk runs before the lower one (pass
+    // order), a stream saw the lower chunk's not-yet-moved grains as a floor
+    // and stalled there too. Here a grain queued behind a moving grain keeps
+    // most of its speed, gravity has a little per-grain jitter (a falling
+    // block stretches and breaks up), and a grain landing on resting ground
+    // turns part of its fall into sideways speed (Cell::vx) that makes it
+    // roll down the pile and slide a little at its foot.
+
+    static constexpr int kGrainVxCap = 2 * kVelOne;   // fastest sideways roll
+    static constexpr int kGrainVxStop = 24;           // slower than this counts as stopped
+
+    bool movingGrain(const Cell& b) const {
+        return mats_[b.material].kind == MaterialKind::Powder && (b.vy != 0 || b.vx != 0);
+    }
+
+    static int decay(int v, int num, int den) {
+        v = v * num / den;
+        return std::abs(v) < kGrainVxStop ? 0 : v;
+    }
+
+    bool fallGrain(int& x, int& y, Cell*& c, const Material& m) {
+        queued_ = false;
+        const int g = static_cast<int>(static_cast<float>(params_.gravity) * m.gravity);
+        int vy = c->vy + g - g / 4 + static_cast<int>(rng_.below(static_cast<std::uint32_t>(g / 2 + 1)));
+        vy = std::clamp(vy, 0, m.maxFall * kVelOne);
+        int vx = c->vx;
+        int steps = vy >> 8;
+        if (static_cast<int>(rng_.below(kVelOne)) < (vy & (kVelOne - 1))) ++steps;
+        steps = std::max(steps, 1);
+        const bool resting = c->vy == 0 && c->vx == 0;
+
+        bool moved = false, inLiquid = false;
+        int impact = 0, side = 0;
+        for (int s = 0; s < steps; ++s) {
+            // sideways speed bends the fall into an arc (at most 2 px a tick)
+            int dx = 0;
+            if (vx != 0 && side < 2 && static_cast<int>(rng_.below(kVelOne)) < std::abs(vx)) {
+                dx = vx > 0 ? 1 : -1;
+                Cell* sc = at(x + dx, y);
+                Cell* dc = at(x + dx, y + 1);
+                if (!sc || !dc || !canDisplace(m, mats_[sc->material], 0) || !canDisplace(m, mats_[dc->material], 1)) dx = 0;
+            }
+            Cell* below = at(x + dx, y + 1);
+            if (!below) break;
+            const Material& t = mats_[below->material];
+            if (!canDisplace(m, t, 1)) {
+                if (movingGrain(*below)) {
+                    // queued behind a grain that is still moving: keep most of the speed
+                    vy = std::min(vy, std::max(static_cast<int>(below->vy), vy * 3 / 4));
+                    queued_ = !moved;
+                    wake(x, y);
+                } else {
+                    impact = vy;
+                }
+                break;
+            }
+            if (resting && s == 0 && below->stamp == stamp_) {
+                // the phase 1 rule (a wall face slides off grain by grain instead of
+                // shuffling down), unless the grain under it fell straight out: then
+                // nothing holds this one up and it follows (a block drops as one)
+                const Cell* gone = at(x, y + 2);
+                if (!(gone && movingGrain(*gone) && gone->vy > 0 && gone->stamp == stamp_)) { wake(x, y); break; }
+            }
+            if (t.kind == MaterialKind::Liquid || t.kind == MaterialKind::Powder) {
+                inLiquid = true;
+                if (rng_.unit() >= sinkChance(m, t)) { wake(x, y); break; }
+            }
+            swapCells(c, x, y, below, x + dx, y + 1);
+            c = below;
+            x += dx;
+            ++y;
+            moved = true;
+            if (dx != 0) ++side;
+        }
+        if (inLiquid) {
+            vy = std::min(vy, kVelOne / 2);
+            vx = decay(vx, 1, 2);
+        } else if (impact > 0) {
+            // landed on resting ground: part of the fall becomes a sideways roll,
+            // towards an open side (a random one when both or neither are open)
+            vy = 0;
+            if (impact >= kVelOne / 2) {
+                auto open = [&](int d) {
+                    Cell* sc = at(x + d, y);
+                    Cell* dc = at(x + d, y + 1);
+                    return sc && dc && canDisplace(m, mats_[sc->material], 0) && canDisplace(m, mats_[dc->material], 1);
+                };
+                // only off a pile or an edge: on flat ground a grain stays where it lands
+                const bool l = open(-1), r = open(1);
+                if (l || r) {
+                    int d = vx > 0 ? 1 : vx < 0 ? -1 : (rng_.coin() ? 1 : -1);
+                    if (l != r) d = r ? 1 : -1;
+                    const float k = (0.25f + 0.45f * rng_.unit()) * std::max(m.slide, 0.1f);
+                    const int add = static_cast<int>(static_cast<float>(impact) * k);
+                    vx = std::clamp(vx + d * add, -kGrainVxCap, kGrainVxCap);
+                }
+            }
+            if (vx != 0) wake(x, y);
+        } else if (!moved && !queued_) {
+            vy = 0;
+        }
+        if (!inLiquid && moved && impact == 0) vx = decay(vx, 31, 32); // a little air drag
+        c->vy = static_cast<std::int16_t>(vy);
+        c->vx = static_cast<std::int16_t>(vx);
+        return moved;
+    }
+
+    // A grain on the ground with sideways speed rolls down the slope or slides
+    // on flat ground (friction halves it each step); without speed it falls
+    // back to the phase 1 slide chance.
+    bool rollGrain(int x, int y, Cell* c, const Material& m) {
+        const int vx = c->vx;
+        if (vx == 0) return false;
+        const int d = vx > 0 ? 1 : -1;
+        Cell* diag = at(x + d, y + 1);
+        Cell* side = at(x + d, y);
+        if (side && canDisplace(m, mats_[side->material], 0)) {
+            if (diag && canDisplace(m, mats_[diag->material], 1)) {
+                const bool wet = mats_[diag->material].kind == MaterialKind::Liquid;
+                if (!wet || rng_.unit() < sinkChance(m, mats_[diag->material])) {
+                    c->vx = static_cast<std::int16_t>(decay(vx, wet ? 1 : 3, wet ? 2 : 4));
+                    swapCells(c, x, y, diag, x + d, y + 1);
+                    return true;
+                }
+            } else if (static_cast<int>(rng_.below(kVelOne)) < std::abs(vx)) {
+                c->vx = static_cast<std::int16_t>(decay(vx, 1, 2));
+                swapCells(c, x, y, side, x + d, y);
+                return true;
+            }
+            c->vx = static_cast<std::int16_t>(decay(vx, 3, 4));
+        } else {
+            c->vx = 0; // ran into something
+        }
+        wake(x, y);
+        return c->vx != 0;
     }
 
     // ------------------------------------------------------------- splashes
@@ -280,6 +423,10 @@ private:
 
     void updatePowder(int x, int y, Cell* c, const Material& m) {
         if (fall(x, y, c, m)) return;
+        if (params_.smoothPowder) {
+            if (queued_) return;                    // waiting behind a moving grain
+            if (rollGrain(x, y, c, m)) return;
+        }
         // resting: maybe slide off the pile
         int d = rng_.coin() ? 1 : -1;
         bool open = false;
@@ -298,18 +445,30 @@ private:
         if (open) wake(x, y); // could still slide: stay awake
     }
 
+    static constexpr std::uint8_t kCalmRuns = 6;          // surface runs a resting liquid pixel may start
+    static constexpr std::uint32_t kCalmStart16 = 65536 / 4; // chance per tick to start one
+
     void updateLiquid(int x, int y, Cell* c, const Material& m) {
-        if (fall(x, y, c, m)) return;
+        if (fall(x, y, c, m)) {
+            if (params_.calmLiquid && !(c->flags & kFlagBurning) && c->material == m.id) c->life = 0;
+            return;
+        }
         if (c->material == kEmpty) return; // splashed away
         if (ctx_.anyMiscible && mix(x, y, c, m)) return;
 
+        const bool calm = params_.calmLiquid;
         int d = rng_.coin() ? 1 : -1;
+        if (calm && c->vx != 0) d = c->vx > 0 ? 1 : -1; // keep flowing the way it went
         for (int k = 0; k < 2; ++k, d = -d) {
             Cell* diag = at(x + d, y + 1);
             Cell* side = at(x + d, y);
             if (diag && side && canDisplace(m, mats_[side->material], 0) &&
                 canDisplace(m, mats_[diag->material], 1) &&
                 rng_.unit() < sinkChance(m, mats_[diag->material])) {
+                if (calm) {
+                    c->vx = static_cast<std::int16_t>(d * kVelOne);
+                    if (!(c->flags & kFlagBurning)) c->life = 0;
+                }
                 swapCells(c, x, y, diag, x + d, y + 1);
                 return;
             }
@@ -328,18 +487,40 @@ private:
         }
         for (int k = 0; k < 2; ++k, d = -d) {
             int dist = 0;
+            bool drop = false;
             for (int i = 1; i <= m.spread; ++i) {
                 Cell* t = at(x + d * i, y);
                 if (!t || !canDisplace(m, mats_[t->material], 0)) break;
                 dist = i;
                 Cell* under = at(x + d * i, y + 1);
-                if (under && canDisplace(m, mats_[under->material], 1)) break; // found a drop
+                if (under && canDisplace(m, mats_[under->material], 1)) { drop = true; break; } // found a drop
             }
             if (dist > 0) {
+                if (calm) {
+                    // Flat surface, no drop in reach (#477): the phase 1 rule shuffled a pool's
+                    // partial top row back and forth every tick, for ever. Here a pixel keeps
+                    // flowing the way it goes (Cell::vx) until something stops it, and may
+                    // start such a run along the surface only kCalmRuns times (Cell::life,
+                    // free on a liquid that isn't burning) before it rests. Falling or finding
+                    // a drop resets the count, so 1 px steps still level out, then it sleeps.
+                    const bool flowing = (c->vx > 0 && d > 0) || (c->vx < 0 && d < 0);
+                    const bool burning = (c->flags & kFlagBurning) != 0;
+                    if (drop) {
+                        if (!burning) c->life = 0;
+                    } else if (!flowing) {
+                        if (burning || c->life >= kCalmRuns) continue; // rests in its row: lets the chunk sleep
+                        if (!rng_.chance16(kCalmStart16)) { wake(x, y); continue; }
+                        ++c->life;
+                    }
+                    int vx = drop ? d * kVelOne : (flowing ? c->vx * 15 / 16 : d * kVelOne);
+                    if (std::abs(vx) < 24) vx = 0;
+                    c->vx = static_cast<std::int16_t>(vx);
+                }
                 swapCells(c, x, y, at(x + d * dist, y), x + d * dist, y);
                 return;
             }
         }
+        if (calm) c->vx = 0;
         // nowhere open: a denser liquid pushes sideways under a lighter
         // neighbour (water slides under oil instead of standing beside it)
         for (int k = 0; k < 2; ++k, d = -d) {
@@ -715,6 +896,7 @@ private:
     DirtyRect selfNext_;
     std::uint32_t processed_ = 0;
     std::uint32_t events_ = 0;
+    bool queued_ = false; // fallGrain: blocked by a moving grain without moving (keeps its speed)
 };
 
 static_assert(16 + 1 + 1 < kMaxReach, "max fall / spread must stay inside the checkerboard margin");
