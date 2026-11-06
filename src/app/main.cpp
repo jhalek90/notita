@@ -6,6 +6,7 @@
 //              [--scene world] [--load notita_world.sav]   (phase 6: the streamed world, F8 save / F9 load)
 //              [--autoplay]   (the play scene with the player driven through a short demo)
 //              [--no-light] [--light-cpu] [--light-selftest]
+//              [--old-look] [--old-motion] [--lockstep]   (#477: liquids as pixels / phase 1 powder and liquid rules; F10 flips)
 //              [--at x,y]     (start with the player's feet at x,y: screenshots of one room)
 #include <SDL3/SDL_main.h>
 
@@ -30,6 +31,9 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--gas-cpu")) opts.gasCpu = true;
         else if (!std::strcmp(argv[i], "--gas-selftest")) opts.gasSelfTest = true;
         else if (!std::strcmp(argv[i], "--no-light")) opts.noLight = true;
+        else if (!std::strcmp(argv[i], "--old-look")) opts.oldLook = true;     // #477: liquids as pixels
+        else if (!std::strcmp(argv[i], "--old-motion")) opts.oldMotion = true; // #477: phase 1 powder/liquid rules
+        else if (!std::strcmp(argv[i], "--lockstep")) opts.lockstep = true;    // one tick per frame
         else if (!std::strcmp(argv[i], "--light-cpu")) opts.lightCpu = true;
         else if (!std::strcmp(argv[i], "--light-selftest")) opts.lightSelfTest = true;
         else if (!std::strcmp(argv[i], "--load")) { opts.load = next(); opts.scene = "world"; }

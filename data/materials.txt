@@ -56,6 +56,14 @@
 #                   (mass(a) + mass(b) must be twice this material's mass)
 #   split_current   current through a pixel needed to split it (default 0.05)
 #   electric_heat   share of the electric power that turns into heat (0..1, default 1)
+# Liquid look (#477, all optional; the app's smooth liquid surface pass):
+#   look_deep       colour deep down (#rrggbb); the surface uses color, the ramp runs over
+#   look_depth      ... this many pixels (default 24)
+#   look_clear      how much of the backdrop shows through near the surface (0..1, default 0.3)
+#   look_shine      surface line colour + strength (#rrggbbaa)
+#   look_foam       foam / spray colour + strength (#rrggbbaa)
+#   look_wobble     surface wave height in pixels (default 0.35); look_shimmer: interior
+#                   refraction in pixels (0.25); look_glint: moving highlight strength (0.6)
 # Unknown keys are kept for later phases.
 
 [bedrock]
@@ -112,6 +120,12 @@ freeze_point = 0
 freezes_into = frost
 miscible = etchant, tincture
 color = #3a78c8c8
+look_deep = #1e4c8e
+look_depth = 56
+look_clear = 0.45
+look_shine = #cfe8ffb0
+look_foam = #eef6ffe0
+look_wobble = 0.4
 color_variation = 8
 electric = 0.02
 splits_into = hydrogen, oxygen
@@ -130,6 +144,13 @@ burn_heat = 14
 flame_chance = 0.45
 burns_into = smoke
 color = #9c7a2ed0
+look_deep = #6e4c18
+look_depth = 40
+look_clear = 0.4
+look_shine = #ffe6a0b0
+look_foam = #e8d8a0b0
+look_wobble = 0.3
+look_glint = 0.9
 color_variation = 10
 
 [amber_syrup]
@@ -147,6 +168,13 @@ burns_into = smoke
 burn_residue = ash
 residue_chance = 0.5
 color = #c8661ce8
+look_deep = #8a3c10
+look_depth = 30
+look_clear = 0.2
+look_shine = #ffc070a0
+look_foam = #f0b070a0
+look_wobble = 0.1
+look_shimmer = 0.05
 color_variation = 10
 
 [quickmetal]
@@ -157,6 +185,14 @@ spread = 5
 conductivity = 0.7
 heat_capacity = 0.4
 color = #c4ccd6
+look_deep = #6a7380
+look_depth = 12
+look_clear = 0.0
+look_shine = #ffffffe0
+look_foam = #e8eef4c0
+look_wobble = 0.25
+look_shimmer = 0.0
+look_glint = 1.6
 color_variation = 12
 opacity = 0.9
 electric = 0.5
@@ -214,6 +250,14 @@ spawn_temp = 1300
 freeze_point = 750
 freezes_into = basalt
 color = #e8561c
+look_deep = #8a1a04
+look_depth = 10
+look_clear = 0.0
+look_shine = #ffd060e0
+look_foam = #ffe080c0
+look_wobble = 0.15
+look_shimmer = 0.2
+look_glint = 1.0
 color_variation = 26
 emissive = 0.35, 0.08, 0.01
 opacity = 0.85
@@ -282,6 +326,13 @@ spawn_temp = 1250
 freeze_point = 850
 freezes_into = glass
 color = #f2a648
+look_deep = #b0601a
+look_depth = 12
+look_clear = 0.1
+look_shine = #fff0b0d0
+look_foam = #fff0c0c0
+look_wobble = 0.12
+look_glint = 1.0
 color_variation = 16
 emissive = 0.35, 0.17, 0.03
 opacity = 0.8
@@ -360,6 +411,12 @@ boil_point = 140
 boils_into = etchant_fume
 latent_heat = 6
 color = #9be04ad0
+look_deep = #4e8a1c
+look_depth = 44
+look_clear = 0.4
+look_shine = #e8ffb0b0
+look_foam = #f0ffd0d0
+look_wobble = 0.35
 color_variation = 12
 electric = 0.25
 
@@ -430,6 +487,12 @@ boils_into = steam
 latent_heat = 8
 miscible = water
 color = #5a2a8ad8
+look_deep = #3c1666
+look_depth = 44
+look_clear = 0.35
+look_shine = #e0c0ffb0
+look_foam = #f0e0ffd0
+look_wobble = 0.4
 color_variation = 10
 electric = 0.03
 
@@ -484,6 +547,13 @@ electric = 0.7
 emissive = 0.6, 0.25, 0.06
 opacity = 0.9
 color = #ffa050
+look_deep = #a0401a
+look_depth = 10
+look_clear = 0.0
+look_shine = #fff0c0e0
+look_foam = #ffe0b0c0
+look_wobble = 0.2
+look_glint = 1.3
 color_variation = 12
 
 [molten_iron]
@@ -501,6 +571,13 @@ electric = 0.4
 emissive = 0.7, 0.3, 0.08
 opacity = 0.9
 color = #ffb060
+look_deep = #a84a10
+look_depth = 10
+look_clear = 0.0
+look_shine = #fff4c8e0
+look_foam = #ffe8c0c0
+look_wobble = 0.2
+look_glint = 1.3
 color_variation = 12
 
 [heater_coil]
@@ -644,4 +721,10 @@ miscible = water
 electric = 0.3
 splits_into = hydrogen, oxygen
 color = #4a88b8c8
+look_deep = #23607a
+look_depth = 52
+look_clear = 0.35
+look_shine = #d8f0eaa0
+look_foam = #f0f6eee0
+look_wobble = 0.35
 color_variation = 8

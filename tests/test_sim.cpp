@@ -408,3 +408,106 @@ TEST_CASE(water_slides_under_oil) {
     CHECK(misplaced <= 10);
     CHECK(hi - lo <= 8);
 }
+
+// ---- #477: smooth grains and calm liquids ----
+
+namespace {
+// Drops a 6 x 30 block of sand down a 384 px shaft and returns, over the ticks
+// before its front reaches the floor, the most grains seen standing still
+// (vy == 0) in mid-air. The phase 1 rule stalled the stream wherever the
+// upper chunk ran before the lower one (every other chunk border).
+int stalledWhileFalling(bool smooth, const char* material = "sand") {
+    Fixture f(2, 6);
+    f.sim->params().smoothPowder = smooth;
+    f.fill(material, 60, 0, 65, 29);
+    const MaterialId sand = f.id(material);
+    int worst = 0;
+    for (int t = 0; t < 400; ++t) {
+        f.sim->tick();
+        int stalled = 0, front = 0;
+        for (int y = 0; y < 384; ++y)
+            for (int x = 50; x < 76; ++x) {
+                const Cell* c = f.world->cell(x, y);
+                if (c->material != sand) continue;
+                front = std::max(front, y);
+                if (c->vy == 0) ++stalled;
+            }
+        if (front >= 380) break; // landed: from here on stopping is right
+        if (t > 0) worst = std::max(worst, stalled);
+    }
+    return worst;
+}
+} // namespace
+
+TEST_CASE(powder_stream_never_stalls_in_mid_air) {
+    const int smooth = stalledWhileFalling(true);
+    const int old = stalledWhileFalling(false);
+    CHECK_EQ(smooth, 0);
+    CHECK(old > smooth); // the phase 1 rule shows the stall this test is about
+}
+
+TEST_CASE(liquid_stream_never_stalls_at_chunk_borders) {
+    // the same for a block of water: falling cells used to stop for a tick at every
+    // border where the upper chunk runs first; now the cell below is moved on first
+    const int smooth = stalledWhileFalling(true, "water");
+    const int old = stalledWhileFalling(false, "water");
+    CHECK_EQ(smooth, 0);
+    CHECK(old > smooth);
+}
+
+TEST_CASE(powder_stream_lands_in_a_spreading_heap) {
+    // a packed column dropped from high up lands as a heap that spreads at once,
+    // instead of standing on the floor as a pillar that erodes grain by grain
+    Fixture f(4, 4);
+    f.fill("stone", 0, 250, 255, 255);
+    f.fill("sand", 124, 0, 131, 99); // 8 x 100
+    const MaterialId sand = f.id("sand");
+    f.run(220);
+    int height = 0, left = 1 << 30, right = -1;
+    for (int y = 0; y < 250; ++y)
+        for (int x = 0; x < 256; ++x)
+            if (f.at(x, y) == sand) {
+                height = std::max(height, 250 - y);
+                left = std::min(left, x);
+                right = std::max(right, x);
+            }
+    CHECK(right - left + 1 > 40); // spread well past the 8 px column
+    CHECK(height < 60);
+    CHECK_EQ(f.world->count(sand), std::size_t{8 * 100});
+    f.run(1500);
+    f.sim->tick();
+    CHECK_EQ(f.sim->stats().activeChunks, 0); // and the heap comes to rest
+    CHECK_EQ(f.world->count(sand), std::size_t{8 * 100});
+}
+
+TEST_CASE(calm_pool_surface_stops_flickering) {
+    // a basin whose top row is only partly full: the phase 1 rule kept shuffling
+    // those pixels sideways every tick; now they settle and the chunk sleeps
+    auto moves = [](bool calm, int& active) {
+        Fixture f(2, 2);
+        f.sim->params().calmLiquid = calm;
+        f.sim->params().smoothPowder = calm; // "old" = all of the phase 1 rules
+        f.fill("stone", 20, 60, 20, 120);
+        f.fill("stone", 100, 60, 100, 120);
+        f.fill("stone", 20, 121, 100, 121);
+        f.fill("water", 30, 60, 60, 112); // 31 x 53 = 1643 px over a 79 px floor: 20 rows + 63 px
+        f.run(1500);
+        std::vector<MaterialId> before;
+        for (int y = 60; y <= 120; ++y)
+            for (int x = 21; x < 100; ++x) before.push_back(f.at(x, y));
+        f.run(120);
+        int changed = 0;
+        std::size_t i = 0;
+        for (int y = 60; y <= 120; ++y)
+            for (int x = 21; x < 100; ++x) changed += before[i++] != f.at(x, y);
+        active = f.sim->stats().activeChunks;
+        CHECK_EQ(f.world->count(f.id("water")), std::size_t{31 * 53});
+        return changed;
+    };
+    int activeCalm = 0, activeOld = 0;
+    const int calm = moves(true, activeCalm);
+    const int old = moves(false, activeOld);
+    CHECK(calm <= 2);
+    CHECK_EQ(activeCalm, 0);
+    CHECK(old > 10 * std::max(calm, 1));
+}

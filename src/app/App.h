@@ -3,6 +3,7 @@
 // and the ImGui panels (sandbox tools + debug overlay).
 #include "GpuGasSolver.h"
 #include "GpuLight.h"
+#include "GpuLiquid.h"
 #include "Renderer.h"
 #include "light/Lighting.h"
 #include "sim/Bodies.h"
@@ -45,6 +46,9 @@ struct AppOptions {
     bool noLight = false;       // start with the lighting off (F4 toggles)
     bool lightCpu = false;      // light on the CPU reference even when the GPU pass works
     bool lightSelfTest = false; // compare the GPU and CPU lighting on a fixed scene, print the result, exit
+    bool oldLook = false;       // #477: start with liquids drawn as pixels (F10 flips)
+    bool oldMotion = false;     // #477: start with the phase 1 powder / liquid rules (F10 flips)
+    bool lockstep = false;      // exactly one sim tick per frame (comparable screenshots)
     bool at = false;            // --at x,y: put the player (feet) there at start (screenshots of a room)
     float atX = 0, atY = 0;
 };
@@ -192,6 +196,29 @@ private:
     std::array<float, 4 * 256> heatEmit_{};     // incandescence rgb by temperature (400 + 5 C steps)
     std::vector<std::uint32_t> matPacked_;      // matEmit_ packed (cold, not burning)
     std::vector<std::uint8_t> gasOpacity_;      // per gas cell over the view, scratch
+
+    // ---- #477: liquid look (AppLiquid.cpp) and the old/new motion toggle ----
+    static constexpr int kLiquidRamp = 64;     // depth steps of a liquid's colour ramp
+    void initLiquid();        // after initLighting: material looks + the GPU surface pass
+    bool liquidActive() const; // new look on, and not in the temperature / velocity / pressure / electric views
+    void shadeLiquids();      // in drawWorld: depth colours for liquid pixels + the per-pixel info
+    void markLiquidParticle(int vx, int vy, MaterialId m);
+    void clearLiquidInfo(int vx, int vy);
+    int  liquidScale() const;
+    bool recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit); // true when it drew the frame
+    bool liquidScreenshot(const std::string& path);
+    void setNewLookAndMotion(bool on);
+    void drawLiquidUi();
+    static bool writeBmp(const std::string& path, const std::vector<std::uint32_t>& px, int w, int h);
+    std::unique_ptr<GpuLiquid> gpuLiquid_; // null when the GPU pass is unavailable
+    std::string gpuLiquidError_;
+    std::vector<std::uint8_t> liquidLook_;     // per material: look slot (0 = not a liquid)
+    std::vector<std::uint32_t> liquidRamp_;    // per material x kLiquidRamp depth colours
+    std::vector<std::uint32_t> liquidInfo_;    // per view pixel, see liquid.hlsl
+    std::array<LiquidLook, kLiquidLooks> looks_{};
+    bool newLook_ = true, newMotion_ = true, smoothPowder_ = true, calmLiquid_ = true, liquidWobble_ = true;
+    bool liquidDrawn_ = false;
+    float liquidTime_ = 0.0f;
 
     std::array<float, 120> tickHistory_{};
     int tickHistoryPos_ = 0;
