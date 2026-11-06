@@ -15,7 +15,10 @@ bool Renderer::init(SDL_GPUDevice* device, int width, int height) {
     SDL_GPUTextureCreateInfo tci{};
     tci.type = SDL_GPU_TEXTURETYPE_2D;
     tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    // compute-writable too when the device allows it, so the lighting composite can write it in place
+    storage_ = SDL_GPUTextureSupportsFormat(device_, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+                                            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | (storage_ ? SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE : 0);
     tci.width = static_cast<Uint32>(width);
     tci.height = static_cast<Uint32>(height);
     tci.layer_count_or_depth = 1;
@@ -55,25 +58,27 @@ Viewport Renderer::fit(std::uint32_t tw, std::uint32_t th) const {
 }
 
 void Renderer::record(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, std::uint32_t tw, std::uint32_t th,
-                      const Viewport& vp) {
+                      const Viewport& vp, bool upload) {
     (void)tw;
     (void)th;
-    if (void* dst = SDL_MapGPUTransferBuffer(device_, upload_, true)) {
-        std::memcpy(dst, pixels_.data(), pixels_.size() * sizeof(std::uint32_t));
-        SDL_UnmapGPUTransferBuffer(device_, upload_);
+    if (upload) {
+        if (void* dst = SDL_MapGPUTransferBuffer(device_, upload_, true)) {
+            std::memcpy(dst, pixels_.data(), pixels_.size() * sizeof(std::uint32_t));
+            SDL_UnmapGPUTransferBuffer(device_, upload_);
+        }
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureTransferInfo src{};
+        src.transfer_buffer = upload_;
+        src.pixels_per_row = static_cast<Uint32>(width_);
+        src.rows_per_layer = static_cast<Uint32>(height_);
+        SDL_GPUTextureRegion region{};
+        region.texture = texture_;
+        region.w = static_cast<Uint32>(width_);
+        region.h = static_cast<Uint32>(height_);
+        region.d = 1;
+        SDL_UploadToGPUTexture(copy, &src, &region, true);
+        SDL_EndGPUCopyPass(copy);
     }
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
-    SDL_GPUTextureTransferInfo src{};
-    src.transfer_buffer = upload_;
-    src.pixels_per_row = static_cast<Uint32>(width_);
-    src.rows_per_layer = static_cast<Uint32>(height_);
-    SDL_GPUTextureRegion region{};
-    region.texture = texture_;
-    region.w = static_cast<Uint32>(width_);
-    region.h = static_cast<Uint32>(height_);
-    region.d = 1;
-    SDL_UploadToGPUTexture(copy, &src, &region, true);
-    SDL_EndGPUCopyPass(copy);
 
     SDL_GPUBlitInfo blit{};
     blit.source.texture = texture_;

@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <utility>
 
@@ -36,6 +37,7 @@ App::App(AppOptions opts) : opts_(std::move(opts)) {}
 App::~App() {
     if (device_) SDL_WaitForGPUIdle(device_);
     gpuGas_.reset(); // its GPU buffers must go before the device does (it was released after ~App, on a dead device)
+    gpuLight_.reset();
     if (imguiReady_) {
         ImGui_ImplSDL3_Shutdown();
         ImGui_ImplSDLGPU3_Shutdown();
@@ -76,6 +78,16 @@ bool App::init() {
     player_ = std::make_unique<Player>(*world_, mats_, opts_.seed);
     player_->setGas(gas_.get());
     player_->setBodies(bodies_.get());
+    gen_ = std::make_unique<WorldGen>(mats_, opts_.seed);
+    {
+        StreamParams sp;
+        sp.chunksW = kWorldChunksW;
+        sp.chunksH = kWorldChunksH;
+        stream_ = std::make_unique<Streamer>(*world_, mats_, *gen_, sp);
+        stream_->attach(sim_.get(), gas_.get(), particles_.get(), bodies_.get());
+        stream_->setPool(pool_.get());
+    }
+    if (!opts_.load.empty()) savePath_ = opts_.load;
     gasView_ = opts_.gasView;
     for (int k = 0; k < gas_->speciesCount(); ++k) gasColor_.push_back(mats_[gas_->species(k)].color);
     brush_.material = mats_.idOf("sand");
@@ -134,6 +146,7 @@ bool App::init() {
         }
         useGpuGas_ = gpuGas_ && !opts_.gasCpu;
     }
+    initLighting();
 
     // ---- Dear ImGui ----
     IMGUI_CHECKVERSION();
@@ -161,8 +174,28 @@ bool App::init() {
 void App::rebuildDisplayPalette() {
     displayPalette_.resize(mats_.size());
     const std::uint32_t air = mats_[kEmpty].color | 0xFF000000u;
-    for (std::size_t i = 0; i < mats_.size(); ++i)
-        for (int s = 0; s < 256; ++s) displayPalette_[i][s] = blendOver(mats_[static_cast<MaterialId>(i)].palette[s], air);
+    for (std::size_t i = 0; i < mats_.size(); ++i) {
+        const Material& m = mats_[static_cast<MaterialId>(i)];
+        // `noise = 0.1` in materials.txt: per-channel hue jitter on top of the brightness
+        // spread (color_variation), hashed from the shade so a pixel keeps its colour
+        float noise = 0.0f;
+        if (auto it = m.extra.find("noise"); it != m.extra.end()) noise = std::clamp(std::strtof(it->second.c_str(), nullptr), 0.0f, 0.5f);
+        for (int s = 0; s < 256; ++s) {
+            std::uint32_t c = m.palette[s];
+            if (noise > 0.0f) {
+                std::uint32_t h = (static_cast<std::uint32_t>(s) * 0x9E3779B1u) ^ (static_cast<std::uint32_t>(i) * 0x85EBCA77u);
+                std::uint32_t out = c & 0xFF000000u;
+                for (int k = 0; k < 3; ++k) {
+                    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
+                    const float j = (static_cast<float>(h & 0xFFFF) / 32767.5f - 1.0f) * noise; // -noise .. +noise
+                    const float v = static_cast<float>((c >> (8 * k)) & 0xFF) * (1.0f + j);
+                    out |= static_cast<std::uint32_t>(std::clamp(v, 0.0f, 255.0f) + 0.5f) << (8 * k);
+                }
+                c = out;
+            }
+            displayPalette_[i][s] = blendOver(c, air);
+        }
+    }
 }
 
 namespace {
@@ -216,7 +249,84 @@ void App::buildHeatPalettes() {
     }
 }
 
+void App::startWorld() {
+    const int sy = gen_->surfaceY(0);
+    stream_->start(0, sy);
+    streaming_ = true;
+    spawnPlayer(0.5f, static_cast<float>(sy), true);
+    player_->setSpawnPoint(0.5f, static_cast<float>(sy));
+    if (opts_.autoplay) player_->inventory().capacity = 1LL << 40; // the smoke run digs a long tunnel
+    worldMsg_.clear();
+}
+
+void App::followWorld() {
+    if (!streaming_) return;
+    const float fx = playerOn_ ? player_->x() : camX_ + kViewW * 0.5f;
+    const float fy = playerOn_ ? player_->centreY() : camY_ + kViewH * 0.5f;
+    stream_->follow(fx, fy);
+}
+
+bool App::saveWorld() {
+    if (!streaming_) { worldMsg_ = "save/load works in the world scene (O)"; return false; }
+    SaveExtras ex;
+    ex.hasPlayer = playerOn_;
+    ex.player = player_->state();
+    const Inventory& inv = player_->inventory();
+    ex.creative = inv.creative;
+    ex.capacity = inv.capacity;
+    ex.charges = inv.charges;
+    for (std::size_t m = 0; m < inv.counts().size(); ++m)
+        if (inv.counts()[m]) ex.inventory.emplace_back(static_cast<MaterialId>(m), inv.counts()[m]);
+    std::string err;
+    const auto t0 = SDL_GetTicksNS();
+    const bool ok = stream_->save(savePath_, ex, &err);
+    const double ms = static_cast<double>(SDL_GetTicksNS() - t0) / 1e6;
+    worldMsg_ = ok ? "saved " + savePath_ + " (" + std::to_string(static_cast<int>(ms)) + " ms)" : "save failed: " + err;
+    SDL_Log("%s", worldMsg_.c_str());
+    return ok;
+}
+
+bool App::loadWorld() {
+    SaveExtras ex;
+    std::string err;
+    if (!stream_->load(savePath_, ex, &err)) {
+        worldMsg_ = "load failed: " + err;
+        SDL_Log("%s", worldMsg_.c_str());
+        return false;
+    }
+    streaming_ = true;
+    if (ex.hasPlayer) {
+        player_->setState(ex.player);
+        Inventory& inv = player_->inventory();
+        inv.reset(mats_.size());
+        inv.creative = ex.creative;
+        inv.capacity = ex.capacity;
+        inv.charges = ex.charges;
+        for (const auto& [m, n] : ex.inventory) inv.setCount(m, n);
+        creative_ = ex.creative;
+        playerOn_ = true;
+        camX_ = player_->x() - kViewW * 0.5f;
+        camY_ = player_->y() - kViewH * 0.6f;
+    } else {
+        removePlayer();
+        camX_ = static_cast<float>(world_->minX() + (world_->widthPx() - kViewW) / 2);
+        camY_ = static_cast<float>(world_->minY() + (world_->heightPx() - kViewH) / 2);
+    }
+    worldMsg_ = "loaded " + savePath_ + (err.empty() ? "" : " (" + err + ")");
+    SDL_Log("%s", worldMsg_.c_str());
+    return true;
+}
+
 void App::loadScene(const std::string& name) {
+    if (name == "world") {
+        startWorld();
+        if (!opts_.load.empty()) { loadWorld(); opts_.load.clear(); }
+        return;
+    }
+    if (streaming_) {
+        stream_->reset(0, 0); // back to the fixed sandbox world
+        streaming_ = false;
+    }
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
     removePlayer(); // only the play scene has a player (F7 spawns one anywhere)
@@ -270,6 +380,17 @@ void App::autoplay() {
     in.jump = in.down = in.use = in.place = false;
     in.aimX = px + 30.0f;
     in.aimY = py;
+    if (streaming_) {
+        // --scene world --autoplay: walk east for good, digging through whatever is in the way
+        // and hopping now and then, so the awake window keeps shifting (a streaming smoke run)
+        in.move = 1.0f;
+        in.tool = Tool::Dig;
+        in.use = true;
+        in.aimX = px + 12.0f;
+        in.aimY = py + 3.0f;
+        in.jump = f % 50 < 12;
+        return;
+    }
     if (f < 60) in.move = 1.0f;
     else if (f < 130) { in.tool = Tool::Jet; in.use = true; in.move = 1.0f; in.aimX = px - 10.0f; in.aimY = py + 40.0f; }
     else if (f < 220) in.move = 1.0f;
@@ -365,6 +486,9 @@ void App::handleEvent(const SDL_Event& e) {
             break;
         }
         if (k == SDLK_L) { loadScene("play"); break; }
+        if (k == SDLK_O) { loadScene("world"); break; }
+        if (k == SDLK_F8) { saveWorld(); break; }
+        if (k == SDLK_F9) { loadWorld(); break; }
         if (k == SDLK_F2) { creative_ = !creative_; break; }
         if (k == SDLK_T) {
             slowMo_ = !slowMo_;
@@ -382,7 +506,8 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_PERIOD || k == SDLK_N) { paused_ = true; ++stepRequests_; }
         else if (k == SDLK_TAB || k == SDLK_F1) showUi_ = !showUi_;
         else if (k == SDLK_F3) showChunks_ = !showChunks_;
-        else if (k == SDLK_F4) showDirty_ = !showDirty_;
+        else if (k == SDLK_F4 && (SDL_GetModState() & SDL_KMOD_SHIFT)) showDirty_ = !showDirty_;
+        else if (k == SDLK_F4) lightOn_ = !lightOn_;
         else if (k == SDLK_F5) showTemp_ = !showTemp_;
         else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
         else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
@@ -495,6 +620,7 @@ void App::tickSim() {
         playerIn_.usePressed = false;
         playerHurt_ = std::max(playerHurt_ * 0.9f, player_->stats().damage);
     }
+    followWorld();
 }
 
 void App::drawPlayer() {
@@ -602,7 +728,7 @@ void App::drawWorld() {
                         const std::uint32_t base = displayPalette_[c.material][c.shade];
                         row[x - cx0] = mixColor(base, tempPalette_[static_cast<std::size_t>(ti)], c.material == kEmpty ? 235 : 190);
                     }
-                } else if (glow_) {
+                } else if (glow_ && !lightingActive()) { // with lighting on, heat glows as emitted light instead
                     for (int x = x0; x < x1; ++x) {
                         const Cell& c = cells[x - ox];
                         std::uint32_t col = displayPalette_[c.material][c.shade];
@@ -624,6 +750,7 @@ void App::drawWorld() {
     drawParticles();
     drawGas();
     drawPlayer();
+    prepareLight();
 }
 
 void App::drawGas() {
@@ -804,13 +931,17 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Play (L)")) loadScene("play");
     ImGui::SameLine();
+    if (ImGui::Button("World (O)")) loadScene("world");
+    ImGui::SameLine();
     if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
     ImGui::PopItemWidth();
     ImGui::End();
 
     drawGasUi();
+    drawLightUi();
     drawPhase4Ui();
     drawPlayerUi();
+    drawWorldUi();
 
     // debug overlay
     const ImGuiIO& io = ImGui::GetIO();
@@ -838,7 +969,7 @@ void App::drawUi() {
                     player_->grounded() ? "grounded" : "airborne");
     ImGui::Checkbox("Chunks (F3)", &showChunks_);
     ImGui::SameLine();
-    ImGui::Checkbox("Dirty rects (F4)", &showDirty_);
+    ImGui::Checkbox("Dirty rects (Shift+F4)", &showDirty_);
     int wx, wy;
     if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
         if (const Cell* c = world_->cell(wx, wy))
@@ -1114,7 +1245,8 @@ int App::run() {
         ImDrawData* dd = ImGui::GetDrawData();
 
         if (swap) {
-            renderer_.record(cmd, swap, sw, sh, viewport_);
+            const bool lit = recordLight(cmd); // the GPU lighting writes the view texture itself
+            renderer_.record(cmd, swap, sw, sh, viewport_, !lit);
             ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
             SDL_GPUColorTargetInfo target{};
             target.texture = swap;
@@ -1127,6 +1259,7 @@ int App::run() {
         SDL_SubmitGPUCommandBuffer(cmd);
 
         if (opts_.frames > 0 && ++frame >= opts_.frames) {
+            if (!opts_.screenshot.empty()) lightScreenshot();
             if (!opts_.screenshot.empty() && !writeScreenshot(opts_.screenshot))
                 SDL_Log("could not write %s", opts_.screenshot.c_str());
             SDL_Log("ran %d frames, last tick %.3f ms, %d/%d chunks active", frame, sim_->stats().tickMs,
@@ -1135,6 +1268,38 @@ int App::run() {
         }
     }
     return 0;
+}
+
+void App::drawWorldUi() {
+    ImGui::Begin("World", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    if (!streaming_) {
+        ImGui::TextDisabled("Fixed sandbox world: the streamed procedural world is O");
+        if (ImGui::Button("Open the world (O)")) loadScene("world");
+        ImGui::SameLine();
+        if (ImGui::Button("Load save (F9)")) loadWorld();
+        ImGui::End();
+        return;
+    }
+    const StreamStats& st = stream_->stats();
+    const int fx = static_cast<int>(std::floor(playerOn_ ? player_->x() : camX_ + kViewW * 0.5f));
+    ImGui::Text("Seed %llu   biome %s   surface y %d", static_cast<unsigned long long>(gen_->seed()), biomeName(gen_->biome(fx)),
+                gen_->surfaceY(fx));
+    ImGui::Text("Awake window: chunks (%d, %d) .. (%d, %d)", stream_->windowX(), stream_->windowY(),
+                stream_->windowX() + stream_->params().chunksW - 1, stream_->windowY() + stream_->params().chunksH - 1);
+    ImGui::Text("Sleeping: %zu chunks, %.1f KiB encoded", stream_->storedChunks(), static_cast<double>(st.storeBytes) / 1024.0);
+    ImGui::Text("Shifts %d (last %.2f ms)  generated %d  woken %d  slept %d", st.shifts, st.lastShiftMs, st.generated, st.woken, st.slept);
+    const long long live = world_->totalMass(mats_) + particles_->totalMass() + bodies_->totalMass() +
+                           (playerOn_ ? player_->inventory().totalMass(mats_) : 0);
+    ImGui::Text("Mass: live %lld + sleeping %lld px, gas %.1f + %.1f", live, stream_->storedMass(),
+                static_cast<double>(gas_->massFixed()) / kGasMassOne, static_cast<double>(stream_->storedGasFixed()) / kGasMassOne);
+    if (ImGui::Button("Save (F8)")) saveWorld();
+    ImGui::SameLine();
+    if (ImGui::Button("Load (F9)")) loadWorld();
+    ImGui::SameLine();
+    if (ImGui::Button("New world")) startWorld();
+    ImGui::TextDisabled("%s", savePath_.c_str());
+    if (!worldMsg_.empty()) ImGui::TextWrapped("%s", worldMsg_.c_str());
+    ImGui::End();
 }
 
 } // namespace notita

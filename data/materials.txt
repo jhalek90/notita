@@ -41,6 +41,12 @@
 # Phase 5:
 #   hardness        how slowly the player digs it (dig chance per tick = 1 / (1 + 2 * hardness));
 #                   default: solids density / 1000, powders and liquids 0
+# Phase 6 (lighting, all optional):
+#   emissive        light it gives off, linear r, g, b (0..4), e.g. "emissive = 1.6, 0.5, 0.1";
+#                   hot pixels glow by temperature on top of this, flames default to their colour
+#   opacity         how much light one pixel blocks (0..1); default solids/powders 0.6,
+#                   liquids 0.15, gases 0.03, air and flames 0
+#   noise           per-pixel hue jitter on top of color_variation (0..0.5, default 0)
 # Unknown keys are kept for later phases.
 
 [bedrock]
@@ -59,6 +65,7 @@ conductivity = 0.2
 heat_capacity = 1.0
 color = #6b6f78
 color_variation = 14
+noise = 0.04
 
 [sand]
 kind = powder
@@ -70,6 +77,7 @@ melt_point = 1150
 melts_into = molten_glass
 color = #d8b86a
 color_variation = 18
+noise = 0.06
 
 [cinder_grit]
 kind = powder
@@ -79,6 +87,7 @@ conductivity = 0.12
 heat_capacity = 0.9
 color = #7a5a4c
 color_variation = 22
+noise = 0.08
 
 [water]
 kind = liquid
@@ -137,6 +146,7 @@ conductivity = 0.7
 heat_capacity = 0.4
 color = #c4ccd6
 color_variation = 12
+opacity = 0.9
 
 [steam]
 kind = gas
@@ -163,6 +173,7 @@ flame_chance = 0.6
 burns_into = smoke
 color = #5c7a3ca0
 color_variation = 14
+opacity = 0.08
 
 ; ---- phase 2: heat, fire and chemistry ----
 
@@ -177,6 +188,7 @@ melt_point = 2
 melts_into = water
 color = #bfe3f2e8
 color_variation = 10
+opacity = 0.3
 
 [magma]
 kind = liquid
@@ -190,6 +202,9 @@ freeze_point = 750
 freezes_into = basalt
 color = #e8561c
 color_variation = 26
+emissive = 0.35, 0.08, 0.01
+opacity = 0.85
+noise = 0.05
 
 [basalt]
 kind = solid
@@ -200,6 +215,7 @@ melt_point = 950
 melts_into = magma
 color = #3b3533
 color_variation = 12
+noise = 0.05
 
 [molten_glass]
 kind = liquid
@@ -213,6 +229,8 @@ freeze_point = 850
 freezes_into = glass
 color = #f2a648
 color_variation = 16
+emissive = 0.35, 0.17, 0.03
+opacity = 0.8
 
 [glass]
 kind = solid
@@ -223,6 +241,7 @@ melt_point = 1050
 melts_into = molten_glass
 color = #a8d8d070
 color_variation = 6
+opacity = 0.05
 
 [timber]
 kind = solid
@@ -238,6 +257,7 @@ burn_residue = ash
 residue_chance = 0.35
 color = #7b5232
 color_variation = 18
+noise = 0.05
 
 [ash]
 kind = powder
@@ -247,6 +267,7 @@ conductivity = 0.05
 heat_capacity = 0.6
 color = #8c8780
 color_variation = 16
+noise = 0.05
 
 [smoke]
 kind = gas
@@ -260,6 +281,7 @@ condenses_into = ash
 change_chance = 0.01
 color = #4a4648a0
 color_variation = 16
+opacity = 0.12
 
 [flame]
 kind = special
@@ -271,6 +293,7 @@ life_min = 10
 life_max = 34
 color = #ff9a2a
 color_variation = 40
+emissive = 2.2, 0.95, 0.22
 
 [etchant]
 kind = liquid
@@ -315,6 +338,7 @@ conductivity = 0.1
 heat_capacity = 0.8
 color = #b0603a
 color_variation = 20
+noise = 0.08
 
 [hydrogen]
 kind = gas
@@ -330,6 +354,7 @@ flame_chance = 0.9
 burns_into = steam
 color = #e6ecff50
 color_variation = 6
+opacity = 0.0
 
 ; ---- phase 4: liquids that blend ----
 
