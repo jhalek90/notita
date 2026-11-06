@@ -1,4 +1,4 @@
-// notita sandbox entry point.
+// Fine Grain (repo and exe: notita) entry point.
 //   notita.exe [--scene showcase|world|demo|forge|churn|thermal|gas|quarry|play|circuits|empty] [--threads N] [--seed N]
 //              (default: showcase, the concrete building over the streamed world)
 //              [--frames N [--screenshot out.bmp]] [--temp-view] [--electric-view current|potential]

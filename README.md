@@ -1,7 +1,11 @@
-# notita
+# Fine Grain
 
-A 2D pixel sandbox where every pixel is simulated. "notita" is the repo name;
-the game itself still needs its own name (the window says "working title").
+A 2D pixel sandbox where every grain is simulated: sand, water, fire, gas,
+heat, bodies and electricity, all on one living pixel grid.
+
+"notita" is still the repo, folder and build name (`notita.exe`,
+`notita_world.sav`); "Fine Grain" is the name the game shows (window title,
+title card, panels, the exe's version info).
 
 Phase 1 is the engine core: a chunked, multithreaded falling-sand
 simulation, data-driven materials, a GPU-presented 640x360 view and sandbox

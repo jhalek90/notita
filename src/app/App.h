@@ -95,6 +95,7 @@ private:
     int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();
+    void drawTitleCard(); // the game's name over the first seconds, fading out (panels hidden or not)
     void drawOverlays(const Viewport& vp);
     bool screenToWorld(float sx, float sy, int& wx, int& wy) const;
     bool writeScreenshot(const std::string& path) const;
