@@ -1,4 +1,4 @@
-﻿# notita: notes for agents
+# notita: notes for agents
 
 ## Project notes
 - Build on this PC: system CMake is 3.25 (no VS 2026 generator) and there is no Ninja; use `build.bat` (vcvars64 + NMake) or call vcvars64.bat then `cmake --build build`. Bash `cmd //c "..."` quoting silently skips builds: run builds from PowerShell.
@@ -15,3 +15,7 @@
 - Gas grid (src/sim/GasGrid.*): `GasGrid::step()` runs after `Simulator::tick()` (App::tickSim). `CpuGasSolver` (GasSolverCpu.cpp) and src/app/shaders/gas.hlsl are the same kernels in the same order: change both, then run `notita --gas-selftest` (needs a D3D12 GPU). CMake builds the .dxil with the Windows SDK's dxc into build/shaders/; without them the app silently uses the CPU solver.
 - With the grid on, the sim's `ambientRate` is 0 (the grid carries air heat and counts its losses in `lostHeat/sourceHeat/latentHeat`), and every gas pixel is absorbed into the grid each step, so CA gas rules only run with the grid off.
 - GasGrid touches pixels outside the tick: row-parallel jobs must stay 4 block rows apart (pushPixels) or run serially (condense, expandPockets, explode).
+- Phase 4 order per tick: `Simulator::tick` -> `BodySystem::step` -> `ParticleSystem::step` -> `GasGrid::step` (App::tickSim, bench, tests). Conserved mass is `World::totalMass` (skips `kFlagBody` cells) + `ParticleSystem::totalMass` + `BodySystem::totalMass`; never delete a particle or a body pixel, hand it to the grid or the particle system.
+- `Cell::aux` is now used: on liquids it counts miscibility swaps (`mixSteps`); on solids 1 = `kAuxSettled` (put down by physics), 2 = `kAuxPinned` (scene geometry, never a body). Scene builders must pin their solids (`scenes::pinRect` / `PinnedScene`), or ledges fall as bodies.
+- Bodies: Box2D v3.2 via cmake/Box2D.cmake (linked PRIVATE into notita_sim, no Box2D types in Bodies.h). Terrain shapes are rebuilt every tick, so Box2D sleeping is off and rest is judged by `BodyParams::restSpeed`; `kFlagBody` cells are stamps that are removed and rewritten every tick (the CA must never move them: only Solid kind gets the flag).
+- Splashes only happen with a ParticleSystem attached (`Simulator::setParticles`); the splash reach is 3 px (inside `kMaxReach`), keep it there.

@@ -1,4 +1,4 @@
-﻿# notita
+# notita
 
 A 2D pixel sandbox where every pixel is simulated. "notita" is the repo name;
 the game itself still needs its own name (the window says "working title").
@@ -8,8 +8,11 @@ simulation, data-driven materials, a GPU-presented 640x360 view and sandbox
 brushes. Phase 2 adds per-pixel heat, state changes, fire and a reaction table
 written in Luau. Phase 3 adds the gas grid: smoke, steam and other gases
 flow on a velocity/pressure grid (GPU compute, with a CPU reference), with
-buoyancy, convection, burning gas and explosions. The full plan lives in
-Corvid note N249.
+buoyancy, convection, burning gas and explosions. Phase 4 adds splash
+particles (liquids hit hard fly as momentum particles and settle back),
+miscible liquids that blend, and rigid bodies: unsupported clumps of solid
+pixels become Box2D bodies that fall, tumble and shatter. The full plan lives
+in Corvid note N249.
 
 ## Build (Windows, MSVC)
 
@@ -44,6 +47,7 @@ build\notita.exe --scene forge    :: heat playground: magma, fire, etchant, fros
 build\notita.exe --scene churn    :: whole world full of moving material
 build\notita.exe --scene thermal  :: churn with hot and cold materials mixed in
 build\notita.exe --scene gas      :: gas lab: boiling pot, chimney, hydrogen cave, heavy gas
+build\notita.exe --scene quarry   :: phase 4: waterfall, blending liquids, blocks on a burning post, a boulder
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
@@ -72,7 +76,8 @@ Controls:
 | F3 / F4 | chunk grid / dirty rects overlay |
 | F5 | temperature view (hot pixels also glow in the normal view) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
-| `G` / `X` / `V` | gas grid on/off / blast at the cursor / gas lab scene |
+| `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
+| `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
 | Tab or F1 | hide the panels |
 
 ## Layout
@@ -88,6 +93,8 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   GasExchange.h hook the gas grid plugs into (takes created gas mass and ambient heat)
   GasGrid.*     phase 3 gas grid: fields, pixel coupling, explosions
   GasSolverCpu.cpp  the grid math on the CPU (reference for the GPU kernels)
+  Particle.h, Particles.*  phase 4 momentum particles (splashes, blast debris, shoved pixels)
+  Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
@@ -194,6 +201,50 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   expansion source, heat and a radial kick in the grid, and the loose pixels
   in the radius are thrown outwards.
 
+## Splashes, blending liquids, rigid bodies (phase 4)
+
+- **Splash particles.** A liquid pixel that fell this tick and is stopped
+  hard (`splashSpeed`, 5 px/tick) splashes: the surface pixels of the pool
+  around the impact (or, on hard ground, the drop itself) leave the grid as
+  particles. Each particle carries its whole cell (material, temperature,
+  shade), so `World::totalMass + ParticleSystem::totalMass` is constant; the
+  cell left behind is air at ambient. The ejecta share at most `restitution`
+  (0.6) of the impact momentum, drawn from a budget until it is spent.
+  Particles fly with gravity, a little drag and the gas grid's wind
+  (`gasDrag`), stop at the first non-empty cell and settle into it, handing
+  their velocity back to the cell (the automaton carries on with the fall
+  speed). A particle with no room waits, and climbs out if liquid flowed
+  over it, so nothing is ever lost. Blasts (`X`) throw loose pixels as
+  particles too, and rigid bodies shove liquids and powders aside as
+  particles. Particles are created in chunk order and settled in index order,
+  so results stay deterministic for any thread count.
+- **Miscible liquids.** `miscible = water, tincture` in the material data
+  (symmetric). Miscible pairs don't density-sort; instead a liquid swaps with
+  a different miscible neighbour with chance `mixRate` per tick, a random walk
+  that blends the pool. `Cell::aux` counts a pixel's swaps (it starts swaps
+  under `mixSteps`, takes part under twice that), so a blended pool stops and
+  sleeps while fresh liquid still mixes in. Immiscible liquids layer as before.
+- **Rigid bodies (Box2D v3.2, FetchContent).** Every few ticks, chunks that
+  moved are searched for 4-connected clumps of solid pixels. A clump is held
+  up by an anchor material (bedrock, `anchor = true`) or the world edge
+  anywhere in it, or, once physics has put it down (`aux == kAuxSettled`), by
+  powder, another body or pinned scene geometry under one of its pixels.
+  Scene builders pin their solids (`aux == kAuxPinned`); brushed solids and
+  solids made by state changes are live. An unsupported clump becomes a body
+  that owns its pixels (local coordinates, material, temperature). Each tick
+  the bodies leave the grid, Box2D steps them against the pixel terrain (the
+  solid and powder pixels around each body turned into static boxes by a
+  row-run rectangle cover, used once), and they are stamped back with
+  `kFlagBody`, so liquids flow around them, powders pile on them and heat
+  conducts through them; a stamped pixel that melts, burns or is erased
+  simply leaves the body. The gas grid pushes bodies (pressure gradient and
+  wind at the centre) and blasts kick them. A velocity change above
+  `shatterSpeed` (5 px/tick) in one step shatters a body into a few
+  fragments (nearest random seed, then connected pieces); crumbs fly off as
+  particles. A body at rest for `freezeAfter` ticks turns back into settled
+  pixels. `World::totalMass` skips body stamps, so world + particles + bodies
+  is the conserved sum (tested every tick in the phase 4 tests).
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -232,3 +283,17 @@ pushes a lot of pixels. The CPU solver stops scaling past 4 threads (each of
 its ~47 kernels is one parallel-for). In the app the grid runs on the GPU:
 `notita --gas-selftest` measured about 1.4 ms per step on the 256x128 grid,
 upload, 47 dispatches and download included (it waits for the result).
+
+Phase 4 rows (particles and bodies on; gas rows on the CPU solver):
+
+| scene | 1 thread | 4 threads | 16 threads | particles / bodies (16 thr) |
+| --- | --- | --- | --- | --- |
+| quarry | 9.6 | 3.6 | 4.3 | 0.01 ms (~70 alive) / 0.19 ms (1 body, 757 px) |
+| thermal+p4 | 24.5 | 12.9 | 7.9 | 0.00 ms / 1.5 ms (14 bodies, 87 px) |
+| flip+p4 | 11.2 | 3.4 | 1.8 | 0.03 ms (~100 alive) / 0.3 ms (0 bodies) |
+
+"thermal+p4" is the thermal+gas worst case with the scattered frost, timber
+and iron pixels in the random mix turning into (tiny) bodies: most of its
+body time is the clump search over 60 active chunks. "flip+p4" is flip with
+splashes on: every liquid landing hard splashes, and the particle step costs
+almost nothing. Phase 4 details are in the #470 note.
