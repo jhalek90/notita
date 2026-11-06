@@ -347,3 +347,24 @@ latent_heat = 8
 miscible = water
 color = #5a2a8ad8
 color_variation = 10
+
+# Phase 6: terrain for the generated world
+[loam]
+label = Loam
+kind = solid
+density = 1600
+hardness = 0.25
+conductivity = 0.1
+heat_capacity = 1.1
+color = #6a4a2f
+color_variation = 16
+
+[turf]
+label = Turf
+kind = solid
+density = 1300
+hardness = 0.15
+conductivity = 0.08
+heat_capacity = 1.1
+color = #4f7d34
+color_variation = 20

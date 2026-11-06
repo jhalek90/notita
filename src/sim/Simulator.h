@@ -89,6 +89,7 @@ public:
 
     void tick();
     std::uint64_t tickCount() const { return tick_; }
+    void setTickCount(std::uint64_t t) { tick_ = t; } // phase 6: restoring a save
     std::uint64_t seed() const { return seed_; }
     const SimStats& stats() const { return stats_; }
     SimParams& params() { return params_; }

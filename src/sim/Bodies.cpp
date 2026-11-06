@@ -903,6 +903,66 @@ void BodySystem::step() {
     stats_.stepMs = msSince(t0);
 }
 
+void BodySystem::unstampAll() {
+    for (RigidBody& b : bodies_) unstamp(b);
+}
+
+void BodySystem::restampAll() {
+    for (RigidBody& b : bodies_) stamp(b);
+}
+
+void BodySystem::centroid(const RigidBody& b, float& cx, float& cy) {
+    double sx = 0, sy = 0;
+    for (const BodyPixel& p : b.pixels) {
+        float wx, wy;
+        b.toWorld(p, wx, wy);
+        sx += wx;
+        sy += wy;
+    }
+    const double n = static_cast<double>(std::max<std::size_t>(1, b.pixels.size()));
+    cx = static_cast<float>(sx / n);
+    cy = static_cast<float>(sy / n);
+}
+
+static BodyState bodyState(const RigidBody& b) {
+    BodyState st;
+    st.pixels = b.pixels;
+    st.x = b.x; st.y = b.y; st.c = b.c; st.s = b.s;
+    st.vx = b.vx; st.vy = b.vy; st.w = b.w;
+    st.cooldown = b.cooldown;
+    st.asleep = b.asleep;
+    st.floats = b.floats;
+    return st;
+}
+
+void BodySystem::extractIn(int x0, int y0, int x1, int y1, std::vector<BodyState>& out) {
+    for (std::size_t i = 0; i < bodies_.size();) {
+        float cx, cy;
+        centroid(bodies_[i], cx, cy);
+        const int ix = static_cast<int>(std::floor(cx)), iy = static_cast<int>(std::floor(cy));
+        if (ix >= x0 && ix < x1 && iy >= y0 && iy < y1) {
+            out.push_back(bodyState(bodies_[i]));
+            destroyBody(bodies_[i]);
+            continue;
+        }
+        ++i;
+    }
+}
+
+void BodySystem::snapshot(std::vector<BodyState>& out) const {
+    for (const RigidBody& b : bodies_) out.push_back(bodyState(b));
+}
+
+int BodySystem::restore(const BodyState& st) {
+    std::vector<BodyPixel> px = st.pixels;
+    const int id = createBody(std::move(px), st.x, st.y, st.c, st.s, st.vx, st.vy, st.w, st.cooldown);
+    --stats_.created;
+    RigidBody& b = bodies_.back();
+    b.asleep = st.asleep;
+    b.floats = st.floats;
+    return id;
+}
+
 void BodySystem::clear() {
     for (RigidBody& b : bodies_) unstamp(b);
     while (!bodies_.empty()) freeze(bodies_.back());

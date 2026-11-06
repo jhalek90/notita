@@ -120,6 +120,18 @@ bool ParticleSystem::settle(Particle& p, int cx, int cy) {
     return true;
 }
 
+void ParticleSystem::extractIn(int x0, int y0, int x1, int y1, std::vector<Particle>& out) {
+    std::size_t keep = 0;
+    for (std::size_t i = 0; i < particles_.size(); ++i) {
+        const Particle& p = particles_[i];
+        const int cx = static_cast<int>(std::floor(p.x)), cy = static_cast<int>(std::floor(p.y));
+        if (cx >= x0 && cx < x1 && cy >= y0 && cy < y1) { out.push_back(p); continue; }
+        if (keep != i) particles_[keep] = p;
+        ++keep;
+    }
+    particles_.resize(keep);
+}
+
 void ParticleSystem::step() {
     const auto t0 = std::chrono::steady_clock::now();
     ++tick_;
