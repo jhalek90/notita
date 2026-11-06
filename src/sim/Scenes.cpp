@@ -174,14 +174,15 @@ void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     rect("timber", 190, 330, 220, 344);
     hot("timber", 700.0f, 195, 330, 215, 336);
 
-    // 3. a cave of hydrogen with sand heaps; a magma drip lights it after a while
+    // 3. a cave with hydrogen under its roof and sand heaps; a burning post lights it after a while
     rect("slate", 270, 230, 430, 236);  // roof
     rect("slate", 270, 237, 275, 351);
     rect("slate", 425, 237, 430, 300);
     rect("hydrogen", 276, 237, 424, 252);
     rect("sand", 290, 320, 340, 351);
     rect("sand", 360, 330, 410, 351);
-    rect("magma", 432, 150, 438, 165);  // falls past the cave's open lower right side
+    rect("timber", 410, 320, 414, 351); // a burning post; its flames reach the gas after a while
+    hot("timber", 700.0f, 410, 340, 414, 351);
 
     // 4. heavy murk spills off a shelf into a pit with a pond
     rect("slate", 470, 260, 620, 265);

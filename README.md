@@ -217,3 +217,18 @@ Phase 2 numbers, Ryzen 7 3800X, Release, 900 ticks, mean ms per tick:
 With every thread, a full screen of moving, heat-conducting material takes
 about 1.8 ms of the 16.7 ms budget at 60 Hz. Phase 1 details are in Corvid
 note N250; phase 2 details in the #468 note.
+
+Phase 3 rows, gas grid on (CPU solver, 160x96 cells, 40 pressure
+iterations; the number includes the grid step):
+
+| scene | 1 thread | 4 threads | 16 threads | of which grid (16 thr) |
+| --- | --- | --- | --- | --- |
+| gaslab | 10.70 | 3.84 | 4.26 | 3.72 (solve 2.64) |
+| thermal+gas | 24.61 | 7.75 | 6.40 | 5.05 (solve 2.70) |
+
+"thermal+gas" is the thermal worst case with every gas it makes (steam from
+boiling, smoke, fumes, hydrogen) going into the grid; the coupling then also
+pushes a lot of pixels. The CPU solver stops scaling past 4 threads (each of
+its ~47 kernels is one parallel-for). In the app the grid runs on the GPU:
+`notita --gas-selftest` measured about 1.4 ms per step on the 256x128 grid,
+upload, 47 dispatches and download included (it waits for the result).

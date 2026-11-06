@@ -594,6 +594,16 @@ void GasGrid::step() {
     const auto t1 = std::chrono::steady_clock::now();
     solver_->solve(f_, sp_);
     stats_.solveMs = msSince(t1);
+    // with walls all round, pressure is only defined up to a constant: keep its mean at 0
+    {
+        double sum = 0;
+        int open = 0;
+        for (std::size_t c = 0; c < f_.cells(); ++c)
+            if (f_.open[c] > 0.0f) { sum += f_.p[c]; ++open; }
+        const float mean = open > 0 ? static_cast<float>(sum / open) : 0.0f;
+        for (std::size_t c = 0; c < f_.cells(); ++c)
+            if (f_.open[c] > 0.0f) f_.p[c] -= mean;
+    }
     const auto t2 = std::chrono::steady_clock::now();
     pushPixels();
     expandPockets();

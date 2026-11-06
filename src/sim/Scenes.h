@@ -28,7 +28,8 @@ void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 void thermalChurn(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 
 // Gas playground (phase 3): a boiling pot under a frost lid, a chimney over a
-// fire, a hydrogen-filled cave a magma drip will light, and heavy murk
+// fire, a cave with hydrogen under its roof that a burning post
+// lights, and heavy murk
 // spilling into a pit.
 void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 
