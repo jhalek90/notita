@@ -138,7 +138,8 @@ bool BodySystem::flood(int sx, int sy, Clump& out, bool ignorePins) {
             if (!n) { out.anchored = true; continue; } // the world edge is a wall
             const Material& nm = mats_[n->material];
             if (nm.kind != MaterialKind::Solid) {
-                if (d == 2 && nm.kind == MaterialKind::Powder) out.resting = true;
+                // powder or liquid under a settled clump holds it (a crust on a lava lake, ice on a pond)
+                if (d == 2 && (nm.kind == MaterialKind::Powder || nm.kind == MaterialKind::Liquid)) out.resting = true;
                 continue;
             }
             if (nm.anchor) { out.anchored = true; continue; }

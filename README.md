@@ -16,7 +16,11 @@ player: a 20 px capsule that walks, jumps, swims and glides through the
 pixel world, digs material into an inventory and places it back, with a
 creative mode and movement tools that all act through the sim (a jet that
 puts real gas into the grid, a grapple, blast jumps, rafts that float by
-density, freezing water to walk on). The full plan lives in Corvid note N249.
+density, freezing water to walk on). Phase 6 makes the world endless: a
+procedural world (biomes, layered rock, caves, water tables, magma and gas
+pockets) streamed by chunk around the player, with compressed, versioned
+save files that carry every system's state, plus emissive-pixel lighting
+with soft shadows and bloom on the GPU. The full plan lives in Corvid note N249.
 
 ## Build (Windows, MSVC)
 
@@ -54,6 +58,9 @@ build\notita.exe --scene gas      :: gas lab: boiling pot, chimney, hydrogen cav
 build\notita.exe --scene quarry   :: phase 4: waterfall, blending liquids, blocks on a burning post, a boulder
 build\notita.exe --scene play     :: phase 5: the player in a playground (hill, lake, rafts, cliff, updraft, quickmetal tub)
 build\notita.exe --autoplay       :: the play scene with the player driven through a short demo
+build\notita.exe --scene world    :: phase 6: the endless procedural world, streamed around the player
+build\notita.exe --load notita_world.sav   :: open a saved world (F8 saves, F9 loads in the world scene)
+build\notita.exe --scene world --autoplay  :: the player walks east digging (a streaming smoke run)
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
@@ -87,6 +94,8 @@ Controls:
 | Tab or F1 | hide the panels |
 | `L` / F7 | play scene with the player / spawn (or remove) a player at the cursor in any scene |
 | F2 / `T` | creative mode on/off / slow motion |
+| `O` | the streamed procedural world (World panel: window, sleeping chunks, mass, save/load) |
+| F8 / F9 | save the world to `notita_world.sav` / load it (world scene) |
 
 With a player in the world the keys change (the Player panel lists them too):
 
@@ -118,6 +127,9 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   Particle.h, Particles.*  phase 4 momentum particles (splashes, blast debris, shoved pixels)
   Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter, buoyancy
   Player.*      phase 5 player: capsule movement, damage, inventory, dig/place and the movement tools
+  WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y)
+  ChunkCodec.*  phase 6 palette + RLE byte-plane encoding of chunk cells and gas cells
+  Streamer.*    phase 6 awake window, chunk sleep/wake with every subsystem, save files
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
@@ -306,6 +318,52 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   so timber floats on water and even slate floats on quickmetal. Freeze: a
   cooling brush that stops at -12 C, so water freezes into frost you can walk
   on (the sheet floats away as a body if it isn't held).
+
+## The streamed world and save files (phase 6)
+
+`--scene world` (or `O`) opens an endless world generated from the seed
+(`--seed N`). Every pixel is a pure function of (seed, x, y), so any chunk
+can be generated alone and borders always line up. Along x the surface rolls
+through three biomes: meadow (turf over loam), dunes (deep sand) and
+ashlands (cinder grit over basalt). Below is slate with iron veins, bedrock
+lumps deeper down and basalt below ~700 px. Caves are winding tunnels plus
+large caverns; cave space below the local water table is flooded, deep (or
+volcanic) caverns hold magma at 1300 C, some dry caves hold sparse hydrogen
+(shallow) or murk (deep), and lamp oil sits in pockets just above some water
+tables. Generated solids are pinned scene geometry (never rigid bodies);
+sand, grit and the liquids settle when a fresh chunk first runs.
+
+Streaming: the simulation runs on a fixed awake window of 16x8 chunks
+(1024x512 px, the same size the sandbox world always had) that follows the
+player, or the camera without one. When the focus drifts more than a chunk
+from the window centre, the window shifts: every chunk that leaves goes to
+sleep (its cells are encoded, and the gas grid cells over it, the splash
+particles flying in it and the rigid bodies whose centroid is in it go with
+it), the gas grid is re-based to the new window, and every chunk that enters
+comes back from the store exactly as it left (dirty rects and heat flags
+included) or is generated. Nothing in a sleeping chunk changes. Seams that
+were the old window's wall are woken so things flow across them. Generating,
+encoding and decoding run on the thread pool. Mass is exact through all of
+it: live (world + particles + bodies + grid + inventory) + sleeping, minus
+the terrain generated so far (the only source), never changes (tested every
+tick while the window moves, and in the benchmark).
+
+Encoding (ChunkCodec): the cells are split into byte planes (material via a
+per-chunk palette, shade stored relative to the generator's shade for that
+pixel, the four bytes of the temperature, velocity, flags, life, aux, stamp)
+and each plane is run-length coded. A generated chunk takes ~2.2 KB instead
+of 64 KiB. The gas cells (mass per species, heat, face velocities, pressure,
+obstacle map, sources) use the same scheme.
+
+Save files (F8 / F9, `--load path`): a versioned binary (`NOTITASV`, version
+1) with the material and gas species names (a changed materials.txt is
+remapped by name; missing materials load as air and are reported), the tick
+counters of every system, the grid's heat totals, the player and inventory,
+every chunk ever seen (sleeping ones as stored, awake ones encoded on the
+spot), the live particles and the bodies. Saving leaves the live world as it
+was, and loading continues bit for bit: a test runs the saved world and the
+loaded one side by side and compares them every tick. Writes go to a
+`.tmp` file first and then replace the save.
 
 ## Benchmark
 

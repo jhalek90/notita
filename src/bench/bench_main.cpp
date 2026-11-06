@@ -191,6 +191,7 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
 
 struct WorldResult {
     double mean = 0, p95 = 0, max = 0, shiftMs = 0, shiftMax = 0;
+    double simMs = 0, gridMs = 0, p4Ms = 0, active = 0, bodyMs = 0, findMs = 0, bodies = 0, particles = 0;
     int shifts = 0, generated = 0, woken = 0;
     double storeKiB = 0, saveKiB = 0, saveMs = 0, loadMs = 0;
     bool massOk = true;
@@ -232,6 +233,14 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
         bodies.step();
         particles.step();
         grid.step();
+        r.simMs += sim.stats().tickMs;
+        r.gridMs += grid.stats().solveMs + grid.stats().coupleMs;
+        r.p4Ms += bodies.stats().stepMs + particles.stats().stepMs;
+        r.bodyMs += bodies.stats().stepMs;
+        r.findMs += bodies.stats().findMs;
+        r.bodies += bodies.stats().bodies;
+        r.particles += static_cast<double>(particles.count());
+        r.active += sim.stats().activeChunks;
         fx += 3.0f;
         fy += 1.0f;
         const int before = stream.stats().shifts;
@@ -248,6 +257,15 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
                         stream.storedMass(), stream.generatedMass(), static_cast<long long>(grid.massFixed()), static_cast<long long>(stream.storedGasFixed()));
         }
     }
+    if (std::getenv("NOTITA_BENCH_BODY_MATS")) {
+        std::vector<long long> hist(mats.size(), 0);
+        std::vector<int> aux(4, 0);
+        for (const RigidBody& b : bodies.bodies())
+            for (const BodyPixel& p : b.pixels) { ++hist[p.cell.material]; }
+        for (std::size_t m = 0; m < hist.size(); ++m)
+            if (hist[m]) std::printf("  body pixels of %s: %lld\n", mats[static_cast<MaterialId>(m)].name.c_str(), hist[m]);
+        for (const RigidBody& b : bodies.bodies()) std::printf("  body %d: %zu px at %.0f,%.0f v %.2f,%.2f\n", b.id, b.pixels.size(), b.x, b.y, b.vx, b.vy);
+    }
     std::sort(t.begin(), t.end());
     for (double v : t) r.mean += v;
     r.mean /= static_cast<double>(t.size());
@@ -255,6 +273,14 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     r.max = t.back();
     r.shifts = stream.stats().shifts;
     r.shiftMs /= std::max(1, r.shifts);
+    r.simMs /= ticks;
+    r.gridMs /= ticks;
+    r.p4Ms /= ticks;
+    r.active /= ticks;
+    r.bodyMs /= ticks;
+    r.findMs /= ticks;
+    r.bodies /= ticks;
+    r.particles /= ticks;
     r.generated = stream.stats().generated;
     r.woken = stream.stats().woken;
     r.storeKiB = static_cast<double>(stream.stats().storeBytes) / 1024.0;
@@ -329,6 +355,10 @@ int main(int argc, char** argv) {
         std::printf("%-11s %7d %8.3f %8.3f %8.3f %7d %9.2f %9.2f %4d/%-3d %9.0f %8.0f %4.0f/%-4.0f %5s\n", "world", t, w.mean, w.p95,
                     w.max, w.shifts, w.shiftMs, w.shiftMax, w.generated, w.woken, w.storeKiB, w.saveKiB, w.saveMs, w.loadMs,
                     w.massOk ? "exact" : "DRIFT");
+        std::printf("%-11s   of which sim %.3f ms (%.1f of 128 chunks moving), grid %.3f ms (CPU solver, 256x128), particles+bodies %.3f ms\n",
+                    "", w.simMs, w.active, w.gridMs, w.p4Ms);
+        std::printf("%-11s   bodies %.3f ms (clump search %.3f, %.1f bodies), %.0f particles alive\n", "", w.bodyMs, w.findMs,
+                    w.bodies, w.particles);
     }
     std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"
                 "ignitions, burn-outs and reactions per tick; grid ms = gas grid step (CPU solver, 160x96 cells,\n"

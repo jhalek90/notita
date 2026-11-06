@@ -15,6 +15,7 @@
 #include "sim/World.h"
 #include "sim/WorldGen.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -263,16 +264,20 @@ TEST_CASE(world_generated_chunks_compress_well) {
     MaterialRegistry mats = loadMats();
     WorldGen gen(mats, 5);
     std::size_t total = 0, chunks = 0;
+    double genMs = 0;
     for (int cy = -2; cy < 8; ++cy)
         for (int cx = -4; cx < 4; ++cx) {
             Chunk c;
             c.coord = {cx, cy};
+            const auto t0 = std::chrono::steady_clock::now();
             gen.generate(c);
+            genMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             total += encodeCells(c).size();
             ++chunks;
         }
     const double mean = static_cast<double>(total) / chunks;
-    std::printf("  generated chunk: %.0f bytes encoded on average (raw %zu)\n", mean, sizeof(Cell) * kChunkCells);
+    std::printf("  generated chunk: %.0f bytes encoded on average (raw %zu), %.3f ms to generate\n", mean, sizeof(Cell) * kChunkCells,
+                genMs / static_cast<double>(chunks));
     CHECK(mean < 3000.0); // > 20x smaller than the raw 64 KiB
 }
 
