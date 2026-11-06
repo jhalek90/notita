@@ -83,6 +83,7 @@ bool App::init() {
     materialErrors_.insert(materialErrors_.end(), electric_->errors().begin(), electric_->errors().end());
     player_->setElectric(electric_.get());
     gen_ = std::make_unique<WorldGen>(mats_, opts_.seed);
+    showcase_ = std::make_unique<Showcase>(mats_);
     {
         StreamParams sp;
         sp.chunksW = kWorldChunksW;
@@ -91,6 +92,13 @@ bool App::init() {
         stream_->attach(sim_.get(), gas_.get(), particles_.get(), bodies_.get());
         stream_->setPool(pool_.get());
         stream_->setElectric(electric_.get());
+        // a save of the showcase brings the building back (the generator lays it over the terrain)
+        stream_->setOverlayHook([this](const std::string& name) {
+            if (name == showcase_->name()) gen_->setOverlay(showcase_.get());
+            else if (name.empty()) gen_->setOverlay(nullptr);
+            else return false;
+            return true;
+        });
     }
     if (!opts_.load.empty()) savePath_ = opts_.load;
     gasView_ = opts_.gasView;
@@ -98,6 +106,7 @@ bool App::init() {
     brush_.material = mats_.idOf("sand");
     brush_.radius = 6;
     loadScene(opts_.scene);
+    if (opts_.at) spawnPlayer(opts_.atX, opts_.atY, !playerOn_);
     showTemp_ = opts_.tempView;
     showElectric_ = opts_.electricView >= 0;
     electricView_ = std::max(0, opts_.electricView);
@@ -257,11 +266,12 @@ void App::buildHeatPalettes() {
 }
 
 void App::startWorld() {
-    const int sy = gen_->surfaceY(0);
-    stream_->start(0, sy);
+    float sx = 0.5f, sy = static_cast<float>(gen_->surfaceY(0));
+    if (gen_->overlay() == showcase_.get()) { sx = showcase_->spawnX(); sy = showcase_->spawnY(); }
+    stream_->start(static_cast<int>(std::floor(sx)), static_cast<int>(sy));
     streaming_ = true;
-    spawnPlayer(0.5f, static_cast<float>(sy), true);
-    player_->setSpawnPoint(0.5f, static_cast<float>(sy));
+    spawnPlayer(sx, sy, true);
+    player_->setSpawnPoint(sx, sy);
     if (opts_.autoplay) player_->inventory().capacity = 1LL << 40; // the smoke run digs a long tunnel
     worldMsg_.clear();
 }
@@ -274,7 +284,7 @@ void App::followWorld() {
 }
 
 bool App::saveWorld() {
-    if (!streaming_) { worldMsg_ = "save/load works in the world scene (O)"; return false; }
+    if (!streaming_) { worldMsg_ = "save/load works in the streamed scenes (O world, I showcase)"; return false; }
     SaveExtras ex;
     ex.hasPlayer = playerOn_;
     ex.player = player_->state();
@@ -302,6 +312,7 @@ bool App::loadWorld() {
         return false;
     }
     streaming_ = true;
+    showcaseScene_ = gen_->overlay() == showcase_.get();
     if (ex.hasPlayer) {
         player_->setState(ex.player);
         Inventory& inv = player_->inventory();
@@ -325,7 +336,13 @@ bool App::loadWorld() {
 }
 
 void App::loadScene(const std::string& name) {
-    if (name == "world") {
+    if (name == "world" || name == "showcase") {
+        if (particles_) particles_->clear();
+        if (bodies_) bodies_->clear();
+        if (electric_) electric_->clear();
+        gen_->setOverlay(name == "showcase" ? showcase_.get() : nullptr);
+        showcaseScene_ = name == "showcase";
+        circuitsScene_ = false;
         startWorld();
         if (!opts_.load.empty()) { loadWorld(); opts_.load.clear(); }
         return;
@@ -334,6 +351,7 @@ void App::loadScene(const std::string& name) {
         stream_->reset(0, 0); // back to the fixed sandbox world
         streaming_ = false;
     }
+    showcaseScene_ = false;
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
     if (electric_) electric_->clear();
@@ -391,6 +409,14 @@ void App::autoplay() {
     in.jump = in.down = in.use = in.place = false;
     in.aimX = px + 30.0f;
     in.aimY = py;
+    if (showcaseScene_) {
+        // --scene showcase --autoplay: walk east from the lobby, up the stairs, through the
+        // gallery and into the demolition hall, then dig on east (streaming as it goes)
+        in.move = 1.0f;
+        in.jump = f > 200 && f % 60 < 10;
+        if (f > 700) { in.tool = Tool::Dig; in.use = true; in.aimX = px + 12.0f; in.aimY = py; }
+        return;
+    }
     if (streaming_) {
         // --scene world --autoplay: walk east for good, digging through whatever is in the way
         // and hopping now and then, so the awake window keeps shifting (a streaming smoke run)
@@ -498,6 +524,7 @@ void App::handleEvent(const SDL_Event& e) {
         }
         if (k == SDLK_L) { loadScene("play"); break; }
         if (k == SDLK_O) { loadScene("world"); break; }
+        if (k == SDLK_I) { loadScene("showcase"); break; }
         if (k == SDLK_F8) { saveWorld(); break; }
         if (k == SDLK_F9) { loadWorld(); break; }
         if (k == SDLK_F2) { creative_ = !creative_; break; }
@@ -639,6 +666,7 @@ void App::stepSim(double frameDt) {
 
 void App::tickSim() {
     if (opts_.autoplay && circuitsScene_) autoCircuits();
+    if (opts_.autoplay && showcaseScene_) autoShowcase();
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->tick();
     electric_->setPlayer(playerOn_ ? player_.get() : nullptr);
@@ -810,8 +838,29 @@ void App::autoCircuits() {
     }
 }
 
+// --scene showcase --autoplay: every switch in the awake window closes at t=60
+// (furnace igniter, gas chamber fuse, heater, electrolysis, the shelf lamp);
+// stats every 120 ticks.
+void App::autoShowcase() {
+    const int t = circuitTick_++;
+    if (t == 60) {
+        const MaterialId open = mats_.idOf("switch_open");
+        for (int y = world_->minY(); y < world_->minY() + world_->heightPx(); ++y)
+            for (int x = world_->minX(); x < world_->minX() + world_->widthPx(); ++x)
+                if (world_->material(x, y) == open && open != kEmpty) electric_->toggleSwitch(x, y, 0);
+    }
+    if (t % 120 == 0 && t > 0) {
+        const ElectricStats& es = electric_->stats();
+        const BodyStats& bs = bodies_->stats();
+        SDL_Log("showcase t=%d: player (%.0f, %.0f), %d lamp px lit, %d circuits, power %.1f, sparks %d, splits %lld, bodies %d, "
+                "shifts %d, %zu asleep, electric %.2f ms",
+                t, static_cast<double>(player_->x()), static_cast<double>(player_->y()), es.lit, es.components, es.power, es.sparks,
+                es.splitsTotal, bs.bodies, stream_->stats().shifts, stream_->storedChunks(), es.ms);
+    }
+}
+
 void App::toggleSwitchAt(int x, int y) {
-    const int reach = playerOn_ ? static_cast<int>(player_->params().reach * 0.5f) : 12;
+    const int reach = playerOn_ ? static_cast<int>(player_->params().reach) : 12;
     const int n = electric_->toggleSwitch(x, y, reach);
     if (n > 0) SDL_Log("switch: %d px flipped", n);
 }
@@ -1064,6 +1113,8 @@ void App::drawUi() {
     if (ImGui::Button("Play (L)")) loadScene("play");
     ImGui::SameLine();
     if (ImGui::Button("World (O)")) loadScene("world");
+    ImGui::SameLine();
+    if (ImGui::Button("Showcase (I)")) loadScene("showcase");
     ImGui::SameLine();
     if (ImGui::Button("Circuits (U)")) loadScene("circuits");
     ImGui::SameLine();
@@ -1421,6 +1472,13 @@ void App::drawWorldUi() {
     }
     const StreamStats& st = stream_->stats();
     const int fx = static_cast<int>(std::floor(playerOn_ ? player_->x() : camX_ + kViewW * 0.5f));
+    if (gen_->overlay() == showcase_.get()) {
+        const int fy = static_cast<int>(std::floor(playerOn_ ? player_->centreY() : camY_ + kViewH * 0.5f));
+        const char* here = "outside";
+        for (const Showcase::Room& r : showcase_->rooms())
+            if (fx >= r.x0 && fx <= r.x1 && fy >= r.y0 && fy <= r.y1) { here = r.name.c_str(); break; }
+        ImGui::Text("Showcase: %s   (I restarts it, F8/F9 save/load)", here);
+    }
     ImGui::Text("Seed %llu   biome %s   surface y %d", static_cast<unsigned long long>(gen_->seed()), biomeName(gen_->biome(fx)),
                 gen_->surfaceY(fx));
     ImGui::Text("Awake window: chunks (%d, %d) .. (%d, %d)", stream_->windowX(), stream_->windowY(),

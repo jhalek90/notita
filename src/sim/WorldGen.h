@@ -21,6 +21,17 @@ namespace notita {
 enum class Biome : std::uint8_t { Meadow, Dunes, Ashlands, Count };
 const char* biomeName(Biome b);
 
+// A hand-built area laid over the generated world (the showcase building).
+// Like the generator it must be a pure function of (x, y): any chunk order,
+// same result. It may replace cells and flatten the surface under itself.
+class WorldOverlay {
+public:
+    virtual ~WorldOverlay() = default;
+    virtual const char* name() const = 0;                  // stored in saves ("" = none)
+    virtual int surface(int x, int generated) const = 0;   // the column's surface (flatten a site)
+    virtual bool cellAt(int x, int y, Cell& out) const = 0; // true: use `out` instead of the generated cell
+};
+
 struct WorldGenParams {
     float surfaceAmp = 110.0f;     // px, large rolling hills
     float hillAmp = 24.0f;         // px, small bumps
@@ -46,6 +57,10 @@ public:
     Biome biome(int x) const;
     int waterTableY(int x) const;
     std::uint64_t seed() const { return seed_; }
+    // An overlay replaces cells (and the surface) where it wants to. Set it
+    // before the first chunk is generated: chunks already made keep their cells.
+    void setOverlay(const WorldOverlay* overlay) { overlay_ = overlay; }
+    const WorldOverlay* overlay() const { return overlay_; }
     const WorldGenParams& params() const { return params_; }
 
 private:
@@ -61,6 +76,7 @@ private:
     const MaterialRegistry& mats_;
     std::uint64_t seed_;
     WorldGenParams params_;
+    const WorldOverlay* overlay_ = nullptr;
     MaterialId slate_, basalt_, sand_, grit_, loam_, turf_, iron_, water_, magma_, hydrogen_, murk_, oil_, bedrock_;
 };
 

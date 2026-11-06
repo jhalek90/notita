@@ -41,7 +41,8 @@ namespace notita {
 class Simulator;
 
 // 2: electricity (per-chunk potentials, the electric tick and pending lightning)
-constexpr std::uint32_t kSaveVersion = 2;
+// 3: the name of the generator's overlay (the showcase building), "" = none
+constexpr std::uint32_t kSaveVersion = 3;
 
 struct StoredChunk {
     std::vector<std::uint8_t> cells;  // encodeCells
@@ -88,6 +89,10 @@ public:
     // Generating, encoding and decoding chunks are pure per chunk: with a pool they run in parallel.
     void setPool(ThreadPool* pool) { pool_ = pool; }
     void setElectric(ElectricSystem* electric) { electric_ = electric; }
+    // Loading a save made with another generator overlay (WorldOverlay::name)
+    // calls this before anything is generated; it switches the overlay and
+    // returns false if it can't. Without a hook such saves are rejected.
+    void setOverlayHook(std::function<bool(const std::string&)> hook) { overlayHook_ = std::move(hook); }
 
     // Drops everything (world chunks, store, grid, particles, bodies) and
     // opens the window centred on the chunk holding (x, y).
@@ -137,6 +142,7 @@ private:
     BodySystem* bodies_ = nullptr;
     ElectricSystem* electric_ = nullptr;
     ThreadPool* pool_ = nullptr;
+    std::function<bool(const std::string&)> overlayHook_;
     std::map<std::uint64_t, StoredChunk> store_; // ordered: deterministic saves
     int wcx_ = 0, wcy_ = 0;
     long long storedMass_ = 0;
