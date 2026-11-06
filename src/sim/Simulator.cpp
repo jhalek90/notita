@@ -97,7 +97,9 @@ private:
         updateCell(x, y, t, ctx_.thermal);
         --advanceDepth_;
         queued_ = q;
-        return t->stamp == stamp_;
+        if (t->stamp == stamp_) return true;
+        t->stamp = stamp_; // it had its update this tick: its own chunk must not run it again
+        return false;
     }
 
     // ---- neighbourhood access (own chunk + the 8 around it) ----
@@ -197,7 +199,9 @@ private:
             if (!canDisplace(m, t, 1)) {
                 if (advance(x, y + 1)) { --s; continue; } // the cell below moved on first: try again
                 // queued behind a cell that is still falling: keep the speed (#477)
-                if (params_.smoothPowder && below->vy > 0 && !(below->flags & kFlagBody) &&
+                // (really falling: a grain sinking through the pool keeps vy <= kVelOne / 2 and
+                // would keep everything above it awake)
+                if (params_.smoothPowder && below->vy > kVelOne / 2 && !(below->flags & kFlagBody) &&
                     (t.kind == MaterialKind::Liquid || t.kind == MaterialKind::Powder)) {
                     vy = std::min(vy, std::max(static_cast<int>(below->vy), vy * 3 / 4));
                     queuedLiquid = true;

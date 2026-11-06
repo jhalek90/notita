@@ -181,7 +181,10 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   stretches and breaks up. (The phase 1 rule zeroed the speed whenever the
   cell below was taken: a packed stream stalled as a whole the tick its front
   landed, and stalled again at every other chunk border, where the upper
-  chunk runs before the lower one. That was the "steps".)
+  chunk runs before the lower one. That was the "steps".) A falling cell
+  blocked by a still-falling cell in the chunk below (whose pass comes later)
+  updates that cell first, within the top 15 rows of that chunk, so streams
+  cross chunk borders without a gap.
 - **Calm liquids.** On a flat surface with no drop in reach, a resting liquid
   pixel only keeps flowing the way it was going, and starts such a run along
   the surface at most a few times (`Cell::life`, reset when it falls or finds a
