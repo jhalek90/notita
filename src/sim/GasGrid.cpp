@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <type_traits>
 
 namespace notita {
@@ -49,6 +50,28 @@ GasGrid::GasGrid(World& world, const MaterialRegistry& mats, ThreadPool* pool, s
     loose_.assign(f_.cells(), 0);
     extraSrc_.assign(f_.cells(), 0.0f);
     burnt_.assign(f_.cells(), 0);
+    // #480: flames
+    const std::size_t n = f_.cells();
+    fuel_.assign(n, 0.0f);
+    soot_.assign(n, 0.0f);
+    flameT_.assign(n, 0.0f);
+    glow_.assign(n, 0.0f);
+    tintE_.assign(n, 0.0f);
+    tintMat_.assign(n, kEmpty);
+    litPrev_.assign(n, 0);
+    auto extraF = [](const Material& m, const char* key, float def) {
+        auto it = m.extra.find(key);
+        return it == m.extra.end() ? def : std::strtof(it->second.c_str(), nullptr);
+    };
+    flameFuelOf_.assign(mats.size(), 0.0f);
+    for (const Material& m : mats.all())
+        if (m.kind == MaterialKind::Special) flameFuelOf_[m.id] = std::max(0.0f, extraF(m, "flame_fuel", 0.0f));
+    flameTempOf_.assign(static_cast<std::size_t>(speciesCount()), 0.0f);
+    for (int k = 0; k < speciesCount(); ++k) {
+        const Material& m = mats[species_[k]];
+        flameTempOf_[static_cast<std::size_t>(k)] = extraF(m, "flame_temp", m.burnMaxTemp > 0.0f ? m.burnMaxTemp : 0.0f);
+        if (m.name == "oxygen") oxygen_ = k;
+    }
 }
 
 void GasGrid::buildChunkTable() {
@@ -100,11 +123,16 @@ double GasGrid::heatEnergy() const {
 void GasGrid::absorb(const GasEmission* e, std::size_t count) {
     if (f_.w <= 0) return;
     for (std::size_t q = 0; q < count; ++q) {
-        const int k = speciesOf(e[q].material);
-        if (k < 0) continue;
         const int i = std::clamp((e[q].x - ox_) / kGasCell, 0, f_.w - 1);
         const int j = std::clamp((e[q].y - oy_) / kGasCell, 0, f_.h - 1);
         const int c = j * f_.w + i;
+        if (e[q].fuel > 0.0f && e[q].mass == 0) { // #480: fuel vapour from a burning pixel
+            fuel_[static_cast<std::size_t>(c)] += e[q].fuel;
+            flameFields_ = true;
+            continue;
+        }
+        const int k = speciesOf(e[q].material);
+        if (k < 0) continue;
         f_.m(k, c) += e[q].mass * kGasMassOne;
         // the pixel became air at the same temperature; the grid takes the rest of the gas's heat
         f_.heat[c] += (mats_[e[q].material].heatCapacity - sp_.airCap) * (e[q].temperature - kAmbientTemp);
@@ -122,7 +150,15 @@ void GasGrid::clear() {
     std::fill(f_.heat.begin(), f_.heat.end(), 0.0f);
     std::fill(extraSrc_.begin(), extraSrc_.end(), 0.0f);
     std::fill(burnt_.begin(), burnt_.end(), std::uint8_t{0});
+    for (auto* v : {&fuel_, &soot_, &flameT_, &glow_, &tintE_}) std::fill(v->begin(), v->end(), 0.0f);
+    std::fill(litPrev_.begin(), litPrev_.end(), std::uint8_t{0});
     blasts_.clear();
+}
+
+double GasGrid::fuelEnergy() const {
+    double s = 0;
+    for (float v : fuel_) s += v;
+    return s;
 }
 
 // --------------------------------------------------------------------------
@@ -149,6 +185,8 @@ bool GasGrid::exportChunk(int cx, int cy, ChunkCells& out, bool clear) {
     out.open.assign(S * S, 0.0f);
     out.src.assign(S * S, 0.0f);
     out.burnt.assign(S * S, 0);
+    out.fuel.assign(S * S, 0.0f);
+    out.soot.assign(S * S, 0.0f);
     const int w = f_.w;
     for (int j = 0; j < S; ++j)
         for (int i = 0; i < S; ++i) {
@@ -161,8 +199,11 @@ bool GasGrid::exportChunk(int cx, int cy, ChunkCells& out, bool clear) {
             out.extra[l] = extraSrc_[c];
             out.open[l] = f_.open[c];
             out.src[l] = f_.src[c];
-            out.burnt[l] = burnt_[c];
+            out.burnt[l] = litPrev_[c]; // after a step the last burn map is in litPrev_
+            out.fuel[l] = fuel_[c];
+            out.soot[l] = soot_[c];
             if (clear) {
+                fuel_[c] = soot_[c] = flameT_[c] = glow_[c] = tintE_[c] = 0.0f;
                 for (int k = 0; k < ns; ++k) f_.m(k, c) = 0;
                 f_.heat[c] = 0.0f;
                 f_.u[(j0 + j) * (w + 1) + i0 + i] = 0.0f;
@@ -170,6 +211,7 @@ bool GasGrid::exportChunk(int cx, int cy, ChunkCells& out, bool clear) {
                 f_.p[c] = 0.0f;
                 extraSrc_[c] = 0.0f;
                 burnt_[c] = 0;
+                litPrev_[c] = 0;
             }
         }
     return true;
@@ -192,8 +234,11 @@ bool GasGrid::importChunk(int cx, int cy, const ChunkCells& in) {
             extraSrc_[c] = in.extra[l];
             if (!in.open.empty()) f_.open[c] = in.open[l];
             if (!in.src.empty()) f_.src[c] = in.src[l];
-            burnt_[c] = in.burnt[l];
+            litPrev_[c] = in.burnt[l];
+            if (!in.fuel.empty()) fuel_[c] = in.fuel[l];
+            if (!in.soot.empty()) soot_[c] = in.soot[l];
         }
+    flameFields_ = true;
     return true;
 }
 
@@ -227,6 +272,13 @@ std::int64_t GasGrid::rebase(int originX, int originY) {
     shiftCells(burnt_, 1);
     shiftCells(flameIn_, 1);
     shiftCells(loose_, 1);
+    shiftCells(fuel_, 1);
+    shiftCells(soot_, 1);
+    shiftCells(flameT_, 1);
+    shiftCells(glow_, 1);
+    shiftCells(tintE_, 1);
+    shiftCells(tintMat_, 1);
+    shiftCells(litPrev_, 1);
     {   // faces: u is (w+1) x h, v is w x (h+1); the outer faces are walls
         std::vector<float> u2(f_.u.size(), 0.0f), v2(f_.v.size(), 0.0f);
         for (int j = 0; j < h; ++j)
@@ -270,7 +322,20 @@ void GasGrid::buildObstacles() {
                         const Material& m = mats_[cell.material];
                         if (openKind(m.kind)) {
                             ++open;
-                            if (m.kind == MaterialKind::Special) flame = true;
+                            if (m.kind == MaterialKind::Special) {
+                                flame = true;
+                                // #480: a flame pixel (brush, old save) becomes fuel vapour on the grid
+                                const float fu = flameFuelOf_[cell.material];
+                                if (fu > 0.0f && params_.gridFlames) {
+                                    fuel_[static_cast<std::size_t>(c)] += fu;
+                                    f_.heat[c] += (m.heatCapacity - airCap) * (cell.temperature - kAmbientTemp);
+                                    cell.material = kEmpty;
+                                    cell.flags = 0;
+                                    cell.life = 0;
+                                    wakePx(x0 + dx, y0 + dy);
+                                    continue;
+                                }
+                            }
                             const int k = m.kind == MaterialKind::Gas ? speciesOf(cell.material) : -1;
                             if (k >= 0 && params_.absorbGasPixels) {
                                 f_.m(k, c) += m.mass * kGasMassOne;
@@ -304,7 +369,7 @@ void GasGrid::moveTrapped() {
         for (int i = 0; i < w; ++i) {
             const int c = j * w + i;
             if (f_.open[c] > 0.0f) continue;
-            bool any = f_.heat[c] != 0.0f;
+            bool any = f_.heat[c] != 0.0f || fuel_[c] != 0.0f;
             float light = 0.0f;
             for (int k = 0; k < ns; ++k) {
                 any = any || f_.m(k, c) != 0;
@@ -323,6 +388,9 @@ void GasGrid::moveTrapped() {
                 }
                 f_.heat[t] += f_.heat[c];
                 f_.heat[c] = 0.0f;
+                fuel_[t] += fuel_[c];
+                soot_[t] += soot_[c];
+                fuel_[c] = soot_[c] = flameT_[c] = 0.0f;
                 break;
             }
         }
@@ -378,8 +446,13 @@ void GasGrid::exchangeHeat() {
 void GasGrid::burnGas() {
     const int ns = f_.species;
     const std::size_t n = f_.cells();
-    const std::vector<std::uint8_t> wasBurning = burnt_; // a burning cell lights its neighbours next tick
+    const std::vector<std::uint8_t>& wasBurning = litPrev_; // a burning cell lights its neighbours next tick
     std::fill(burnt_.begin(), burnt_.end(), std::uint8_t{0});
+    // #480: the glow is this tick's burning plus a fading memory of the last few
+    for (std::size_t c = 0; c < n; ++c) {
+        glow_[c] *= 0.5f;
+        tintE_[c] *= 0.5f;
+    }
     for (int k = 0; k < ns; ++k) {
         const Material& m = mats_[species_[k]];
         if (!m.flammable()) continue;
@@ -404,8 +477,138 @@ void GasGrid::burnGas() {
             sourceHeat_ += e;
             extraSrc_[c] += params_.burnExpansion * e;
             stats_.burned += amt / kGasMassOne;
+            // #480: a burning gas is a flame too (tinted by its material in the look)
+            glow_[c] += e;
+            tintE_[c] += e;
+            tintMat_[c] = species_[k];
+            const float tad = (flameTempOf_[static_cast<std::size_t>(k)] > 0.0f ? flameTempOf_[static_cast<std::size_t>(k)] : params_.flameTemp) - kAmbientTemp;
+            if (tad > flameT_[c]) flameT_[c] += (tad - flameT_[c]) * (e / (e + 4.0f));
+            flameFields_ = true;
         }
     }
+}
+
+// #480: fuel vapour from burning pixels (and blasts, and flame pixels) burns
+// on the grid. A cell burns when it is lit: a flame or burning pixel in its
+// block, a cell next to it burnt last tick (the flame front), gas burning in
+// it now, or hot enough. Smoke and other inert gas in the block slow it down
+// (less air), oxygen speeds it up. The energy becomes heat of the cell
+// (counted in sourceHeat) and expansion, plus soot; the burning gas itself
+// is drawn at its flame temperature (flameT_, sub-cell, look and light only).
+// Unlit fuel cools away. Serial and in cell order: deterministic.
+void GasGrid::burnFuel() {
+    const int w = f_.w, h = f_.h, ns = f_.species;
+    stats_.flameCells = 0;
+    stats_.fuelBurned = 0;
+    stats_.maxTemp = 0;
+    double left = 0;
+    bool any = false;
+    const float rate = std::clamp(params_.fuelBurnRate, 0.0f, 1.0f);
+    for (int j = 0; j < h; ++j)
+        for (int i = 0; i < w; ++i) {
+            const int c = j * w + i;
+            const std::size_t cs = static_cast<std::size_t>(c);
+            if (glow_[cs] > 0.5f) stats_.maxTemp = std::max(stats_.maxTemp, flameTemperature(c));
+            float& fu = fuel_[cs];
+            if (fu <= 0.0f) {
+                any = any || flameT_[cs] > 0.0f || soot_[cs] > 0.0f || glow_[cs] > 0.0f;
+                continue;
+            }
+            any = true;
+            if (f_.open[cs] <= 0.0f) { left += fu; continue; }
+            const bool front = litPrev_[cs] || (i > 0 && litPrev_[cs - 1]) || (i + 1 < w && litPrev_[cs + 1]) ||
+                               (j > 0 && litPrev_[cs - w]) || (j + 1 < h && litPrev_[cs + w]);
+            if (!flameIn_[cs] && !front && !burnt_[cs] && temperature(c) < params_.fuelIgnite) {
+                const float d = fu < 0.05f ? fu : fu * params_.fuelDecay;
+                fu -= d;
+                soot_[cs] += d * params_.sootYield;
+                left += fu;
+                continue;
+            }
+            float inert = 0.0f, o2 = 0.0f;
+            for (int k = 0; k < ns; ++k) (k == oxygen_ ? o2 : inert) += static_cast<float>(f_.m(k, c));
+            const float per = 1.0f / (f_.open[cs] * kGasCellPx * kGasMassOne);
+            const float air = std::clamp(1.0f - 0.5f * inert * per, 0.15f, 1.0f);
+            const float boost = std::min(1.0f + 2.0f * o2 * per, 3.0f);
+            float b = fu * std::min(1.0f, rate * air * boost);
+            if (fu - b < 0.05f) b = fu;
+            fu -= b;
+            left += fu;
+            f_.heat[cs] += b;
+            sourceHeat_ += b;
+            extraSrc_[cs] += params_.burnExpansion * b;
+            glow_[cs] += b;
+            soot_[cs] += b * params_.sootYield * (1.0f + 1.5f * (1.0f - air));
+            const float tad = params_.flameTemp * (o2 * per > 0.05f ? 1.25f : 1.0f) - kAmbientTemp;
+            if (tad > flameT_[cs]) flameT_[cs] += (tad - flameT_[cs]) * (b / (b + 4.0f));
+            burnt_[cs] = 1;
+            ++stats_.flameCells;
+            stats_.fuelBurned += b;
+        }
+    stats_.fuel = left;
+    flameFields_ = any;
+}
+
+// #480: fuel, soot and the flame heat ride the solved velocity
+// (semi-Lagrangian, bilinear over open cells), so a flame is carried up and
+// swirled by the flow; soot thins out and the flame heat cools as it goes.
+// Each cell reads only the previous buffers: rows in parallel, same result
+// for any thread count. Not mass-exact (fuel isn't mass; what burns is
+// counted when it burns).
+void GasGrid::advectFlame() {
+    if (!flameFields_) return;
+    const int w = f_.w, h = f_.h;
+    const std::size_t n = f_.cells();
+    fuel2_.resize(n);
+    soot2_.resize(n);
+    flameT2_.resize(n);
+    const float sKeep = 1.0f - std::clamp(params_.sootDecay, 0.0f, 1.0f);
+    const float tKeep = 1.0f - std::clamp(params_.flameCool, 0.0f, 1.0f);
+    auto row = [&](int j) {
+        for (int i = 0; i < w; ++i) {
+            const std::size_t c = static_cast<std::size_t>(j) * w + i;
+            if (f_.open[c] <= 0.0f) {
+                fuel2_[c] = fuel_[c];
+                soot2_[c] = 0.0f;
+                flameT2_[c] = 0.0f;
+                continue;
+            }
+            const float x = static_cast<float>(i) - f_.uc(i, j), y = static_cast<float>(j) - f_.vc(i, j);
+            const int x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y));
+            const float fx = x - static_cast<float>(x0), fy = y - static_cast<float>(y0);
+            float ws = 0.0f, a = 0.0f, s = 0.0f, t = 0.0f;
+            for (int q = 0; q < 4; ++q) {
+                const int ci = x0 + (q & 1), cj = y0 + (q >> 1);
+                if (ci < 0 || cj < 0 || ci >= w || cj >= h) continue;
+                const std::size_t k = static_cast<std::size_t>(cj) * w + ci;
+                if (f_.open[k] <= 0.0f) continue;
+                const float wq = ((q & 1) ? fx : 1.0f - fx) * ((q >> 1) ? fy : 1.0f - fy);
+                ws += wq;
+                a += wq * fuel_[k];
+                s += wq * soot_[k];
+                t += wq * flameT_[k];
+            }
+            if (ws > 1e-4f) {
+                a /= ws;
+                s /= ws;
+                t /= ws;
+            } else {
+                a = fuel_[c];
+                s = soot_[c];
+                t = flameT_[c];
+            }
+            s *= sKeep;
+            t *= tKeep;
+            fuel2_[c] = a < 1e-3f ? 0.0f : a;
+            soot2_[c] = s < 1e-4f ? 0.0f : s;
+            flameT2_[c] = t < 1.0f ? 0.0f : t;
+        }
+    };
+    if (pool_) pool_->parallelFor(h, row);
+    else for (int j = 0; j < h; ++j) row(j);
+    fuel_.swap(fuel2_);
+    soot_.swap(soot2_);
+    flameT_.swap(flameT2_);
 }
 
 // A cool enough gas falls back out as pixels (steam -> water, smoke -> ash),
@@ -548,6 +751,12 @@ void GasGrid::applyBlast(const Blast& b) {
             const float e = 30.0f * power * fall * f_.open[c];
             f_.heat[c] += e;
             sourceHeat_ += e;
+            if (params_.gridFlames && params_.blastFuel > 0.0f) {
+                // #480: the fireball: fuel that burns over the next ticks, carried by the blast
+                fuel_[static_cast<std::size_t>(c)] += params_.blastFuel * power * fall * f_.open[c];
+                litPrev_[static_cast<std::size_t>(c)] = 1;
+                flameFields_ = true;
+            }
             // a radial kick on the cell's faces
             const float nx = d > 0.01f ? ddx / d : 0.0f, ny = d > 0.01f ? ddy / d : 0.0f;
             const float kick = std::min(1.5f, 0.8f * power * fall);
@@ -760,6 +969,8 @@ void GasGrid::step() {
     moveTrapped();
     exchangeHeat();
     burnGas();
+    burnFuel();
+    litPrev_.swap(burnt_); // this tick's burning cells light their neighbours next tick
     condense();
     buildSources();
     if (params_.ambientLoss > 0.0f) {
@@ -775,6 +986,7 @@ void GasGrid::step() {
     const auto t1 = std::chrono::steady_clock::now();
     solver_->solve(f_, sp_);
     stats_.solveMs = msSince(t1);
+    advectFlame();
     // with walls all round, pressure is only defined up to a constant: keep its mean at 0
     {
         double sum = 0;

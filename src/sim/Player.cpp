@@ -188,6 +188,15 @@ void Player::sense() {
             if (m.isFlame() || (c->flags & kFlagBurning)) flame = true;
         }
     }
+    // #480: flames live on the gas grid now: burning gas in a cell the capsule covers burns too
+    if (!flame && gas_ && gas_->params().enabled && gas_->fields().w > 0) {
+        const GasFields& f = gas_->fields();
+        const int i0 = (ix - hwMax - gas_->originX()) / kGasCell, i1 = (ix + hwMax - gas_->originX()) / kGasCell;
+        const int j0 = (iy - H - gas_->originY()) / kGasCell, j1 = (iy - 1 - gas_->originY()) / kGasCell;
+        for (int j = std::max(j0, 0); j <= std::min(j1, f.h - 1) && !flame; ++j)
+            for (int i = std::max(i0, 0); i <= std::min(i1, f.w - 1) && !flame; ++i)
+                flame = gas_->flameGlow()[static_cast<std::size_t>(j) * f.w + i] > 1.0f;
+    }
     submerged_ = total > 0 ? static_cast<float>(liquid) / static_cast<float>(total) : 0.0f;
     liquidDensity_ = liquid > 0 ? static_cast<float>(dens / liquid) : 0.0f;
     liquidViscosity_ = liquid > 0 ? static_cast<float>(visc / liquid) : 0.0f;

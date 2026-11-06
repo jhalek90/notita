@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <utility>
 
 namespace notita {
@@ -28,6 +29,8 @@ struct TickContext {
     const ReactionTable* reactions; // null when off
     const std::uint16_t* reactPairs; // [a * matCount + b]: reaction index + 1, or 0
     bool gasHook;
+    bool gridFlames;                 // #480: burning pixels hand fuel to the grid
+    std::uint32_t ember16;           // #480: chance a flame throw still happens, as an ember
     const std::uint8_t* miscible;    // [a * matCount + b]: the two liquids blend
     bool anyMiscible;
     bool particles;                  // a ParticleSystem takes splashes
@@ -684,7 +687,15 @@ private:
             return;
         }
         if (c.temperature < p.burnMax) c.temperature = std::min(c.temperature + p.burnDT, p.burnMax);
-        if (p.flame != kEmpty && air->material == kEmpty && rng_.chance16(p.flame16)) spawnFlame(air, ax, ay, p.flame);
+        if (ctx_.gridFlames && p.fuel > 0.0f) {
+            // #480: the flame is hot reacting gas on the grid: hand over fuel vapour
+            // (mass 0) at the cell it draws through; now and then an ember still flies
+            self_.gasOut.push_back({ax, ay, c.material, 0, c.temperature, p.fuel * params_.flameFuel});
+            if (p.ember != kEmpty && air->material == kEmpty && rng_.chance16(p.flame16) && rng_.chance16(ctx_.ember16))
+                spawnFlame(air, ax, ay, p.ember);
+        } else if (p.flame != kEmpty && air->material == kEmpty && rng_.chance16(p.flame16)) {
+            spawnFlame(air, ax, ay, p.flame);
+        }
         if (c.temperature < p.ignite - 80.0f) { // doused
             c.flags &= static_cast<std::uint8_t>(~kFlagBurning);
             c.life = 0;
@@ -996,6 +1007,16 @@ void Simulator::rebuildTables() {
             p.flame16 = chance16(m.flameChance);
             p.burnsInto = m.burnsInto.into;
             p.flame = m.flame;
+            if (m.flame != kEmpty) {
+                // #480: the flame material says how much fuel one throw stands for, and its ember
+                const Material& fm = mats_[m.flame];
+                if (auto it = fm.extra.find("flame_fuel"); it != fm.extra.end())
+                    p.fuel = m.flameChance * std::max(0.0f, std::strtof(it->second.c_str(), nullptr));
+                if (auto it = fm.extra.find("ember"); it != fm.extra.end()) {
+                    const MaterialId e = mats_.idOf(it->second);
+                    if (e != kEmpty && mats_[e].kind == MaterialKind::Special) p.ember = e;
+                }
+            }
             if (m.burnResidue.valid) {
                 p.residue = m.burnResidue.into;
                 p.residue16 = chance16(m.residueChance);
@@ -1050,6 +1071,8 @@ void Simulator::updateChunk(Chunk& chunk, int pass) {
     const auto stamp = static_cast<std::uint16_t>(tick_ % 65535u + 1u); // never 0 (fresh cells)
     const TickContext ctx{&mats_, &params_, thermal_.data(), pairs_.data(), mats_.size(),
                           params_.reactions ? reactions_ : nullptr, reactPairs_.data(), gas_ != nullptr,
+                          gas_ != nullptr && params_.gridFlames && gas_->takesFlames(),
+                          static_cast<std::uint32_t>(std::clamp(params_.emberChance, 0.0f, 1.0f) * 65536.0f),
                           mats_.miscibleTable().data(), anyMiscible_, particles_ != nullptr};
     ChunkUpdate u(world_, ctx, chunk, s, stamp);
     chunk.cellsProcessed = u.run();

@@ -399,6 +399,24 @@ life_max = 34
 color = #ff9a2a
 color_variation = 40
 emissive = 2.2, 0.95, 0.22
+# #480: with the gas grid on, a flame is hot reacting gas there: one flame throw
+# stands for this much fuel vapour (energy) handed to the grid, and a brushed
+# flame pixel is taken in as that much fuel; only the ember still flies as pixels
+flame_fuel = 30
+ember = ember
+
+[ember]
+label = Ember
+kind = special
+density = 0.3
+conductivity = 0.3
+heat_capacity = 0.2
+spawn_temp = 820
+life_min = 8
+life_max = 26
+color = #ffb347
+color_variation = 50
+emissive = 1.9, 0.75, 0.16
 
 [etchant]
 kind = liquid
@@ -468,6 +486,8 @@ burn_heat = 80
 burn_max_temp = 1400
 flame_chance = 0.9
 burns_into = steam
+flame_temp = 2000
+flame_tint = 0.55, 0.75, 1.0, 0.85
 color = #e6ecff50
 color_variation = 6
 opacity = 0.0

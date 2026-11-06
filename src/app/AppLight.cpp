@@ -145,6 +145,7 @@ void App::prepareLight() {
             for (int x = x0; x < x1; ++x) row[x - cx0] = emitOf(cells[x - ox]);
         }
     });
+    addFlameLight(); // #480: the flames on the grid
     // flying pixels (sparks, splashes, debris) light and shade like grid pixels
     for (const Particle& p : particles_->particles()) {
         const int x = static_cast<int>(std::floor(p.x)) - cx0, y = static_cast<int>(std::floor(p.y)) - cy0;

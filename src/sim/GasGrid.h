@@ -30,6 +30,7 @@
 #include "ThreadPool.h"
 #include "World.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -127,6 +128,20 @@ struct GasGridParams {
     int   pocketReach = 32;       // longest line of liquid/powder a pocket can shift by one pixel
     float push = 0.6f;            // chance scale for that push
     bool  absorbGasPixels = true; // gas pixels of a grid species (brushes, old saves) are taken in
+    // #480: flames on the grid. Burning pixels hand over fuel vapour (energy, no mass);
+    // it is carried by the flow and burns where it is lit (a flame or burning pixel in
+    // the block, a lit neighbour last tick, or hot enough), releasing its energy as heat
+    // (counted in sourceHeat) and expansion, and leaving soot. Flame pixels whose
+    // material has `flame_fuel` are taken in as fuel too.
+    bool  gridFlames = true;
+    float fuelBurnRate = 0.35f;   // fraction of a lit cell's fuel that burns per tick (with full air)
+    float fuelIgnite = 320.0f;    // C at which fuel vapour lights by itself
+    float fuelDecay = 0.05f;      // fraction of unlit fuel that cools away per tick (a little becomes soot)
+    float sootYield = 0.006f;     // soot per energy unit burnt (up to 2.5x that short of air)
+    float sootDecay = 0.015f;     // fraction of soot that thins out per tick
+    float blastFuel = 45.0f;      // fireball fuel a blast of power 1 puts in its centre cell
+    float flameTemp = 1250.0f;    // C the burning gas itself reaches (sub-cell; the look and the light)
+    float flameCool = 0.12f;      // fraction of that flame heat the gas loses per tick once it stops burning
 };
 
 struct GasGridStats {
@@ -138,6 +153,10 @@ struct GasGridStats {
     int pushed = 0;           // pixels moved by the gas this tick
     int shoved = 0;           // lines of pixels a dense gas pocket shifted outwards this tick
     float maxSpeed = 0, maxPressure = 0;
+    int flameCells = 0;       // #480: cells burning fuel this tick
+    double fuel = 0;          // fuel vapour in the grid (energy units)
+    double fuelBurned = 0;    // burnt this tick
+    float maxTemp = 0;        // hottest flame temperature this tick
 };
 
 class GasGrid : public GasExchange {
@@ -148,6 +167,7 @@ public:
     bool takesGas(MaterialId gas) const override { return speciesOf(gas) >= 0; }
     void absorb(const GasEmission* emissions, std::size_t count) override;
     void ambientHeat(double energy) override { lostHeat_ += energy; }
+    bool takesFlames() const override { return params_.enabled && params_.gridFlames; }
 
     // Call after Simulator::tick(). Couples with the world, then runs the solver.
     void step();
@@ -188,6 +208,20 @@ public:
     double sourceHeat() const { return sourceHeat_; } // added by burning and explosions
     double latentHeat() const { return latentHeat_; } // given to pixels by condensing (latent part)
     float temperature(int i) const;               // grid cell temperature
+    // #480: the flames, per cell (visual fields are not sim inputs)
+    double fuelEnergy() const;                    // unburnt fuel vapour (energy units)
+    const std::vector<float>& fuel() const { return fuel_; }
+    const std::vector<float>& soot() const { return soot_; }
+    const std::vector<float>& flameGlow() const { return glow_; } // energy burnt per tick, smoothed
+    float flameTemperature(int i) const {          // the burning gas itself: max(cell, flame heat)
+        return std::max(temperature(i), kAmbientTemp + flameT_[static_cast<std::size_t>(i)]);
+    }
+    float flameTint(int i) const {                 // share of the glow from a tinted (grid gas) fuel
+        const float g = glow_[static_cast<std::size_t>(i)];
+        return g > 1e-4f ? std::min(1.0f, tintE_[static_cast<std::size_t>(i)] / g) : 0.0f;
+    }
+    MaterialId flameTintMat(int i) const { return tintMat_[static_cast<std::size_t>(i)]; }
+    float flameHeat(int i) const { return kAmbientTemp + flameT_[static_cast<std::size_t>(i)]; } // the burning gas alone
 
     // ---- phase 6: streaming and saves ----
     // The grid cells over one 64x64 px chunk (16x16 cells), in that chunk's
@@ -198,6 +232,7 @@ public:
         std::vector<std::int32_t> mass;   // species * 256
         std::vector<float> heat, u, v, p, extra, open, src; // open/src: the particles, bodies and player read them before the next step rebuilds them
         std::vector<std::uint8_t> burnt;
+        std::vector<float> fuel, soot; // #480 (empty in older saves)
         bool empty() const { return mass.empty(); }
         std::int64_t massFixed() const;
     };
@@ -222,6 +257,8 @@ private:
     void moveTrapped();
     void exchangeHeat();
     void burnGas();
+    void burnFuel();     // #480
+    void advectFlame();  // #480: fuel, soot and flame heat ride the solved velocity
     void condense();
     void buildSources();
     void pushPixels();
@@ -269,6 +306,15 @@ private:
     std::vector<Kick> kicks_;           // grid side of jet()
     void applyKick(const Kick& k);
     double lostHeat_ = 0, sourceHeat_ = 0, latentHeat_ = 0;
+    // #480: flames
+    std::vector<float> fuel_, soot_, flameT_, glow_, tintE_;
+    std::vector<MaterialId> tintMat_;
+    std::vector<std::uint8_t> litPrev_;  // cells that burnt (gas or fuel) last tick
+    std::vector<float> fuel2_, soot2_, flameT2_;
+    std::vector<float> flameFuelOf_;     // per material: fuel a flame pixel stands for (0 = stays a pixel)
+    std::vector<float> flameTempOf_;     // per grid species: C its burning reaches
+    int oxygen_ = -1;                    // species index of oxygen (burns hotter and faster), -1 = none
+    bool flameFields_ = false;           // any fuel, soot or flame heat left to carry
     long long absorbedPending_ = 0;
     ParticleSystem* particles_ = nullptr;
 };

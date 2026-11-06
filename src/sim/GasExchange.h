@@ -21,6 +21,7 @@ struct GasEmission {
     MaterialId material = kEmpty;
     int        mass = 0;         // Material::mass units
     float      temperature = 0.0f;
+    float      fuel = 0.0f;      // #480: fuel vapour (energy units) a burning pixel hands to the grid; mass is 0 then
 };
 
 class GasExchange {
@@ -32,6 +33,9 @@ public:
     virtual void absorb(const GasEmission* emissions, std::size_t count) = 0;
     // Energy (heat_capacity * degrees) air cells gave to the ambient this tick.
     virtual void ambientHeat(double energy) { (void)energy; }
+    // #480: the exchange burns fuel vapour itself (flames live on the grid), so
+    // burning pixels hand over fuel emissions instead of throwing flame pixels.
+    virtual bool takesFlames() const { return false; }
 };
 
 } // namespace notita
