@@ -1264,6 +1264,10 @@ int App::run() {
                 SDL_Log("could not write %s", opts_.screenshot.c_str());
             SDL_Log("ran %d frames, last tick %.3f ms, %d/%d chunks active", frame, sim_->stats().tickMs,
                     sim_->stats().activeChunks, sim_->stats().totalChunks);
+            if (streaming_)
+                SDL_Log("world: player at %.0f,%.0f, %d shifts (last %.2f ms), %d generated, %d woken, %zu chunks asleep (%.0f KiB)",
+                        player_->x(), player_->y(), stream_->stats().shifts, stream_->stats().lastShiftMs, stream_->stats().generated,
+                        stream_->stats().woken, stream_->storedChunks(), static_cast<double>(stream_->stats().storeBytes) / 1024.0);
             running_ = false;
         }
     }

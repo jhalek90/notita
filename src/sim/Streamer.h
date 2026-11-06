@@ -55,7 +55,7 @@ struct StoredChunk {
 
 struct StreamParams {
     int chunksW = 16, chunksH = 8;    // the awake window
-    int slackX = 1, slackY = 0;       // chunks the focus may drift off the window centre before it shifts
+    int slackX = 1, slackY = 1;       // chunks the focus may drift off the window centre before it shifts (the camera clamps inside the window)
 };
 
 struct StreamStats {

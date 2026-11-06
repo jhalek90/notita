@@ -63,13 +63,15 @@ build\notita.exe --load notita_world.sav   :: open a saved world (F8 saves, F9 l
 build\notita.exe --scene world --autoplay  :: the player walks east digging (a streaming smoke run)
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
+build\notita.exe --light-selftest :: GPU light pass vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
 build\notita_bench.exe [ticks] [threads...]
 ```
 
 Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`
 (run N frames, save the sim view, quit: handy for smoke tests),
-`--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`.
+`--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`,
+`--light-cpu` (light pass on the CPU reference), `--no-light`.
 
 Controls:
 
@@ -86,7 +88,8 @@ Controls:
 | Ctrl + left / right mouse | heat / cool under the brush |
 | `H` / `J` / `P` | brush mode: heat / cool / paint |
 | `R` / `F` / `B` / `C` | demo scene / forge scene / full churn scene / clear |
-| F3 / F4 | chunk grid / dirty rects overlay |
+| F3 / Shift+F4 | chunk grid / dirty rects overlay |
+| F4 | lighting on/off (Lighting panel: GPU/CPU, ambient, sky, gain, haze, bloom) |
 | F5 | temperature view (hot pixels also glow in the normal view) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
@@ -135,6 +138,8 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
 src/app/      SDL3 window, GPU presentation, ImGui panels
   GpuGasSolver.*, shaders/gas.hlsl   the gas grid math as SDL3 GPU compute kernels
+  GpuLight.*, AppLight.cpp, shaders/light.hlsl   phase 6 lighting: GPU pass, its inputs, panel, self-test
+src/light/    CPU reference of the light pass (no SDL; the tests use it)
 src/bench/    headless benchmark
 tests/        unit tests (tiny built-in harness)
 data/materials.txt   material definitions (keys documented at the top)
@@ -364,6 +369,31 @@ spot), the live particles and the bodies. Saving leaves the live world as it
 was, and loading continues bit for bit: a test runs the saved world and the
 loaded one side by side and compares them every tick. Writes go to a
 `.tmp` file first and then replace the save.
+
+## Lighting (phase 6)
+
+Emissive pixels light the world on the GPU, with soft shadows and bloom.
+Each frame the app packs three 8-bit inputs per view pixel: the albedo (the
+colour buffer as before), the emission with opacity in alpha, and how much
+sky reaches the top of each column. Emission comes from a material's
+`emissive = r, g, b` key (magma, flame, molten glass), a temperature glow
+above ~420 C (it replaced the old glow mix) and burning cells. Opacity comes
+from an `opacity` key or the kind (solids and powders 0.6, liquids 0.15,
+gases 0.03), plus gas in the grid by its concentration.
+
+The light field lives on 2x2 px cells with a 5-level mip chain. Every cell
+traces 32 cones whose step and mip level grow with distance (out to 192 px),
+so light falls off smoothly and shadows soften with distance; four rotated
+cone sets are blended by a 3x3 tent. Cones that leave the top of the view
+see the sky; open air is sky-lit while closed caves only get the ambient.
+The composite is albedo x (ambient + sky + light) + haze in air + emission +
+bloom (two blurred levels), written straight into the texture the renderer
+blits. `src/light` is the CPU reference with the same integer stepping;
+`--light-selftest` compares the two (max difference 1/255 per channel on this
+PC, ~1.2 ms per frame for the GPU pass at 640x360, plus ~1 ms to fill the
+inputs on the CPU). Without DXIL shaders it lights on the CPU at 4x4 px cells
+(~7 ms). Lighting is off in the temperature and velocity/pressure views.
+A `noise` key adds per-material hue jitter to the per-pixel shade.
 
 ## Benchmark
 
