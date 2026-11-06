@@ -18,6 +18,10 @@
 //   flip+p4: flip (heat off) with splash particles on: every liquid landing hard splashes
 //   play:    the phase 5 playground with everything on and a scripted player
 //            walking, digging, jetting and setting off charges
+//   world:   phase 6: the streamed procedural world (16x8 awake chunks, like
+//            the app) with everything on, the focus flying right at 3 px/tick
+//            and diving 1 px/tick, so a column of chunks sleeps and one wakes
+//            (or is generated) every ~21 ticks; then a save and a load
 // Gas rows run the grid on the CPU reference solver (the GPU solver needs
 // SDL and a device; notita --gas-selftest times it). "grid ms" is the gas
 // grid step (coupling + solve) and is included in the mean.
@@ -33,6 +37,8 @@
 #include "sim/Reactions.h"
 #include "sim/Scenes.h"
 #include "sim/Simulator.h"
+#include "sim/Streamer.h"
+#include "sim/WorldGen.h"
 
 #include <algorithm>
 #include <chrono>
@@ -183,6 +189,88 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     return r;
 }
 
+struct WorldResult {
+    double mean = 0, p95 = 0, max = 0, shiftMs = 0, shiftMax = 0;
+    int shifts = 0, generated = 0, woken = 0;
+    double storeKiB = 0, saveKiB = 0, saveMs = 0, loadMs = 0;
+    bool massOk = true;
+};
+
+WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reactions, int threads, int ticks) {
+    using clock = std::chrono::steady_clock;
+    auto ms = [](clock::time_point a, clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    StreamParams sp; // 16 x 8, the app's window
+    WorldGen gen(mats, 2026);
+    World world(0, 0, sp.chunksW, sp.chunksH);
+    ThreadPool pool(threads);
+    Simulator sim(world, mats, &pool, 2026, &reactions);
+    GasGrid grid(world, mats, &pool, 2026);
+    sim.setGasExchange(&grid);
+    sim.params().ambientRate = 0.0f;
+    ParticleSystem particles(world, mats, &pool, 2026);
+    BodySystem bodies(world, mats, &particles, 2026);
+    sim.setParticles(&particles);
+    particles.setGas(&grid);
+    grid.setParticles(&particles);
+    bodies.setGas(&grid);
+    Streamer stream(world, mats, gen, sp);
+    stream.attach(&sim, &grid, &particles, &bodies);
+    stream.setPool(&pool);
+    float fx = 0.0f, fy = static_cast<float>(gen.surfaceY(0));
+    stream.start(0, static_cast<int>(fy));
+    auto conserved = [&] {
+        const long long px = world.totalMass(mats) + particles.totalMass() + bodies.totalMass() + stream.storedMass() -
+                             stream.generatedMass();
+        return px * kGasMassOne + grid.massFixed() + stream.storedGasFixed();
+    };
+    const long long m0 = conserved();
+    WorldResult r;
+    std::vector<double> t;
+    for (int i = 0; i < ticks; ++i) {
+        const auto t0 = clock::now();
+        sim.tick();
+        bodies.step();
+        particles.step();
+        grid.step();
+        fx += 3.0f;
+        fy += 1.0f;
+        const int before = stream.stats().shifts;
+        stream.follow(fx, fy);
+        if (stream.stats().shifts != before) {
+            r.shiftMs += stream.stats().lastShiftMs;
+            r.shiftMax = std::max(r.shiftMax, stream.stats().lastShiftMs);
+        }
+        t.push_back(ms(t0, clock::now()));
+        if (conserved() != m0 && r.massOk) {
+            r.massOk = false;
+            std::printf("  mass drift at tick %d (shift this tick: %d): %lld -> %lld; world %lld particles %lld bodies %lld stored %lld gen %lld grid %lld storedGas %lld\n",
+                        i, stream.stats().shifts != before, m0, conserved(), world.totalMass(mats), particles.totalMass(), bodies.totalMass(),
+                        stream.storedMass(), stream.generatedMass(), static_cast<long long>(grid.massFixed()), static_cast<long long>(stream.storedGasFixed()));
+        }
+    }
+    std::sort(t.begin(), t.end());
+    for (double v : t) r.mean += v;
+    r.mean /= static_cast<double>(t.size());
+    r.p95 = t[t.size() * 95 / 100];
+    r.max = t.back();
+    r.shifts = stream.stats().shifts;
+    r.shiftMs /= std::max(1, r.shifts);
+    r.generated = stream.stats().generated;
+    r.woken = stream.stats().woken;
+    r.storeKiB = static_cast<double>(stream.stats().storeBytes) / 1024.0;
+    std::vector<std::uint8_t> bytes;
+    SaveExtras ex;
+    auto s0 = clock::now();
+    stream.saveToBytes(bytes, ex);
+    r.saveMs = ms(s0, clock::now());
+    r.saveKiB = static_cast<double>(bytes.size()) / 1024.0;
+    s0 = clock::now();
+    stream.loadFromBytes(bytes, ex);
+    r.loadMs = ms(s0, clock::now());
+    if (conserved() != m0) r.massOk = false;
+    return r;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -214,7 +302,9 @@ int main(int argc, char** argv) {
     const bool gasOnly = std::getenv("NOTITA_BENCH_GAS_ONLY") != nullptr;
     const bool p4Only = std::getenv("NOTITA_BENCH_P4_ONLY") != nullptr;
     const bool playOnly = std::getenv("NOTITA_BENCH_PLAY_ONLY") != nullptr;
+    const bool worldOnly = std::getenv("NOTITA_BENCH_WORLD_ONLY") != nullptr;
     for (const Row& row : rows) {
+        if (worldOnly) break;
         if (gasOnly && !row.gas) continue;
         if (p4Only && !row.phase4) continue;
         if (playOnly && row.scene != Scene::Play) continue;
@@ -231,6 +321,14 @@ int main(int argc, char** argv) {
                             r.particleMs, r.particles, r.bodyMs, r.bodies, r.bodyPixels);
             if (row.scene == Scene::Play) std::printf("%-11s   player %.3f ms\n", "", r.playerMs);
         }
+    }
+    std::printf("\n%-11s %7s %8s %8s %8s %7s %9s %9s %8s %9s %8s %9s %5s\n", "world", "threads", "mean ms", "p95 ms", "max ms",
+                "shifts", "shift ms", "shift max", "gen/wake", "store KiB", "save KiB", "save/load", "mass");
+    for (int t : threadCounts) {
+        const WorldResult w = runWorld(mats, reactions, t, ticks);
+        std::printf("%-11s %7d %8.3f %8.3f %8.3f %7d %9.2f %9.2f %4d/%-3d %9.0f %8.0f %4.0f/%-4.0f %5s\n", "world", t, w.mean, w.p95,
+                    w.max, w.shifts, w.shiftMs, w.shiftMax, w.generated, w.woken, w.storeKiB, w.saveKiB, w.saveMs, w.loadMs,
+                    w.massOk ? "exact" : "DRIFT");
     }
     std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"
                 "ignitions, burn-outs and reactions per tick; grid ms = gas grid step (CPU solver, 160x96 cells,\n"

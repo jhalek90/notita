@@ -158,6 +158,7 @@ struct Rig {
         player->inventory().reset(mats.size());
         stream = std::make_unique<Streamer>(*world, mats, *gen, sp);
         stream->attach(sim.get(), gas.get(), particles.get(), bodies.get());
+        stream->setPool(pool.get());
     }
     void tick() {
         sim->tick();
@@ -429,6 +430,29 @@ TEST_CASE(world_stream_sleeping_chunk_keeps_heat_and_moving_water) {
     CHECK(sameCells(before, *r.world->chunk(cx0, cy0)));
     const Cell* hot = r.world->cell(x + 3, y + 3);
     CHECK(hot && hot->temperature > 400.0f);
+}
+
+TEST_CASE(world_stream_determinism_independent_of_thread_count) {
+    // generation, encoding and decoding run on the pool during shifts; the result must not care
+    std::uint64_t hashes[2] = {};
+    std::int64_t gasMass[2] = {};
+    const int threads[2] = {1, 6};
+    for (int k = 0; k < 2; ++k) {
+        Rig r(true, 11, nullptr, threads[k]);
+        r.stream->start(0, r.gen->surfaceY(0));
+        float fx = 0.0f, fy = static_cast<float>(r.gen->surfaceY(0));
+        for (int t = 0; t < 160; ++t) {
+            fx += 4.0f;
+            fy += t < 80 ? 2.0f : -2.0f;
+            if (t == 30) r.gas->explode(static_cast<int>(fx), static_cast<int>(fy), 12, 1.4f);
+            r.tick();
+            r.stream->follow(fx, fy);
+        }
+        hashes[k] = r.world->hash();
+        gasMass[k] = r.gas->massFixed();
+    }
+    CHECK_EQ(hashes[0], hashes[1]);
+    CHECK_EQ(gasMass[0], gasMass[1]);
 }
 
 // ------------------------------------------------------------- saves

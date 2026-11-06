@@ -25,10 +25,12 @@
 #include "GasGrid.h"
 #include "Particles.h"
 #include "Player.h"
+#include "ThreadPool.h"
 #include "WorldGen.h"
 #include "World.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -79,6 +81,8 @@ public:
     Streamer(World& world, const MaterialRegistry& mats, const WorldGen& gen, StreamParams params = {});
 
     void attach(Simulator* sim, GasGrid* gas, ParticleSystem* particles, BodySystem* bodies);
+    // Generating, encoding and decoding chunks are pure per chunk: with a pool they run in parallel.
+    void setPool(ThreadPool* pool) { pool_ = pool; }
 
     // Drops everything (world chunks, store, grid, particles, bodies) and
     // opens the window centred on the chunk holding (x, y).
@@ -109,8 +113,9 @@ public:
     bool loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& extras, std::string* error = nullptr);
 
 private:
-    void sleepChunk(int cx, int cy);
-    void wakeChunk(int cx, int cy);
+    void sleepChunk(int cx, int cy, StoredChunk&& encoded);
+    void wakeChunk(int cx, int cy, bool decoded);
+    void parallel(int n, const std::function<void(int)>& fn);
     StoredChunk encodeLive(const Chunk& c, bool clearGas);
     void forgetStore();
 
@@ -123,6 +128,7 @@ private:
     GasGrid* gas_ = nullptr;
     ParticleSystem* particles_ = nullptr;
     BodySystem* bodies_ = nullptr;
+    ThreadPool* pool_ = nullptr;
     std::map<std::uint64_t, StoredChunk> store_; // ordered: deterministic saves
     int wcx_ = 0, wcy_ = 0;
     long long storedMass_ = 0;

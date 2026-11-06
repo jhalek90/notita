@@ -93,6 +93,11 @@ void Streamer::attach(Simulator* sim, GasGrid* gas, ParticleSystem* particles, B
     bodies_ = bodies;
 }
 
+void Streamer::parallel(int n, const std::function<void(int)>& fn) {
+    if (pool_ && n > 1) pool_->parallelFor(n, fn);
+    else for (int i = 0; i < n; ++i) fn(i);
+}
+
 void Streamer::forgetStore() {
     store_.clear();
     storedMass_ = 0;
@@ -121,11 +126,14 @@ void Streamer::start(int x, int y) {
     const int cx0 = floorDiv(x, kChunkSize) - params_.chunksW / 2;
     const int cy0 = floorDiv(y, kChunkSize) - params_.chunksH / 2;
     reset(cx0, cy0);
-    for (Chunk* c : world_.chunks()) {
-        gen_.generate(*c);
-        generatedMass_ += cellsMass(*c, mats_);
-        ++stats_.generated;
-    }
+    const auto& chunks = world_.chunks();
+    std::vector<long long> mass(chunks.size(), 0);
+    parallel(static_cast<int>(chunks.size()), [&](int i) {
+        gen_.generate(*chunks[i]);
+        mass[i] = cellsMass(*chunks[i], mats_);
+    });
+    for (long long m : mass) generatedMass_ += m;
+    stats_.generated += static_cast<int>(chunks.size());
     world_.wakeAll();
 }
 
@@ -154,10 +162,17 @@ StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas) {
     return sc;
 }
 
-void Streamer::sleepChunk(int cx, int cy) {
+void Streamer::sleepChunk(int cx, int cy, StoredChunk&& encoded) {
     Chunk* c = world_.chunk(cx, cy);
     if (!c) return;
-    StoredChunk sc = encodeLive(*c, true);
+    StoredChunk sc = std::move(encoded);
+    if (gas_) { // the grid side is serial (it clears the cells it hands over)
+        GasGrid::ChunkCells g;
+        if (gas_->exportChunk(cx, cy, g, true)) {
+            sc.gasMass = g.massFixed();
+            sc.gas = encodeGas(g);
+        }
+    }
     const int x0 = c->originX(), y0 = c->originY();
     if (particles_) {
         particles_->extractIn(x0, y0, x0 + kChunkSize, y0 + kChunkSize, sc.particles);
@@ -175,18 +190,18 @@ void Streamer::sleepChunk(int cx, int cy) {
     ++stats_.slept;
 }
 
-void Streamer::wakeChunk(int cx, int cy) {
+void Streamer::wakeChunk(int cx, int cy, bool decoded) {
     Chunk* c = world_.createChunk(cx, cy);
     const int ox = c->originX(), oy = c->originY();
     auto it = store_.find(chunkKey(cx, cy));
     if (it == store_.end()) {
-        gen_.generate(*c);
+        if (!decoded) gen_.generate(*c);
         generatedMass_ += cellsMass(*c, mats_);
         world_.wakeRect(ox, oy, ox + kChunkMask, oy + kChunkMask); // let fresh terrain settle
         ++stats_.generated;
     } else {
         StoredChunk& sc = it->second;
-        decodeCells(sc.cells, *c);
+        if (!decoded) decodeCells(sc.cells, *c);
         if (!sc.next.empty()) c->nextRect.include(sc.next.x0, sc.next.y0, sc.next.x1, sc.next.y1);
         c->heatNext.store(sc.heatNext, std::memory_order_relaxed);
         if (gas_ && !sc.gas.empty()) {
@@ -214,7 +229,17 @@ void Streamer::shiftTo(int cx0, int cy0) {
     std::vector<ChunkCoord> leaving;
     for (const Chunk* c : world_.chunks())
         if (!inside(c->coord.x, c->coord.y)) leaving.push_back(c->coord);
-    for (const ChunkCoord& c : leaving) sleepChunk(c.x, c.y);
+    {
+        std::vector<StoredChunk> enc(leaving.size());
+        parallel(static_cast<int>(leaving.size()), [&](int i) {
+            const Chunk& c = *world_.chunk(leaving[i].x, leaving[i].y);
+            enc[i].cells = encodeCells(c);
+            enc[i].mass = cellsMass(c, mats_);
+            enc[i].next = c.nextRect.peek();
+            enc[i].heatNext = c.heatNext.load(std::memory_order_relaxed);
+        });
+        for (std::size_t i = 0; i < leaving.size(); ++i) sleepChunk(leaving[i].x, leaving[i].y, std::move(enc[i]));
+    }
     if (gas_) gas_->rebase(cx0 * kChunkSize, cy0 * kChunkSize);
     const int ocx = wcx_, ocy = wcy_;
     wcx_ = cx0;
@@ -222,10 +247,18 @@ void Streamer::shiftTo(int cx0, int cy0) {
     std::vector<ChunkCoord> fresh;
     for (int cy = cy0; cy < cy0 + params_.chunksH; ++cy)
         for (int cx = cx0; cx < cx0 + params_.chunksW; ++cx)
-            if (!world_.chunk(cx, cy)) {
-                wakeChunk(cx, cy);
-                fresh.push_back({cx, cy});
-            }
+            if (!world_.chunk(cx, cy)) fresh.push_back({cx, cy});
+    {
+        // cells first, in parallel (pure per chunk), into chunks made up front
+        std::vector<Chunk*> made;
+        for (const ChunkCoord& c : fresh) made.push_back(world_.createChunk(c.x, c.y));
+        parallel(static_cast<int>(fresh.size()), [&](int i) {
+            auto it = store_.find(chunkKey(fresh[i].x, fresh[i].y));
+            if (it == store_.end()) gen_.generate(*made[i]);
+            else decodeCells(it->second.cells, *made[i]);
+        });
+        for (const ChunkCoord& c : fresh) wakeChunk(c.x, c.y, true);
+    }
     // The old window's edge was a wall; wake the seams so things flow across them now.
     for (const ChunkCoord& c : fresh) {
         const int ox = c.x * kChunkSize, oy = c.y * kChunkSize;
@@ -263,6 +296,7 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
     w.f64(gas_ ? gas_->lostHeat() : 0.0);
     w.f64(gas_ ? gas_->sourceHeat() : 0.0);
     w.f64(gas_ ? gas_->latentHeat() : 0.0);
+    w.i64(generatedMass_);
 
     // player + inventory
     w.u8(extras.hasPlayer ? 1 : 0);
@@ -361,6 +395,7 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         speciesRemap[k] = gas_ ? gas_->speciesOf(mats_.idOf(name)) : -1;
     }
     const double lost = r.f64(), source = r.f64(), latent = r.f64();
+    const long long generated = r.i64();
 
     extras = SaveExtras{};
     extras.hasPlayer = r.u8() != 0;
@@ -444,7 +479,7 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
     storedMass_ = mass;
     storedGas_ = gasMass;
     for (int cy = wcy; cy < wcy + params_.chunksH; ++cy)
-        for (int cx = wcx; cx < wcx + params_.chunksW; ++cx) wakeChunk(cx, cy);
+        for (int cx = wcx; cx < wcx + params_.chunksW; ++cx) wakeChunk(cx, cy, false);
     if (particles_ && !liveParticles.empty()) particles_->add(liveParticles.data(), liveParticles.size());
     if (bodies_) {
         for (const BodyState& b : liveBodies) bodies_->restore(b);
@@ -456,6 +491,7 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         gas_->setHeatTotals(lost, source, latent);
     }
     if (particles_) particles_->setTickCount(partTick);
+    generatedMass_ = generated;
     if (bodies_) bodies_->setTickCount(bodyTick);
     stats_.storeChunks = store_.size();
     stats_.storeBytes = 0;
