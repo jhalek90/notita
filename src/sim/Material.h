@@ -119,6 +119,13 @@ struct Material {
     // The shade a freshly made pixel of this material gets at (x, y): its texture
     // sampled in world space (along = beam direction for grain, 0 = x, 1 = y).
     std::uint8_t shadeAt(int x, int y, int along = 0) const { return textureShade(texture, x, y, along); }
+    // Short-lived pixels that flicker (flames, embers, sparks): the random draw r
+    // (0..255) picks where in the texture they sample, so a spot that keeps
+    // spawning them doesn't always give the same colour. Untextured: r itself.
+    std::uint8_t flickerShade(int x, int y, std::uint32_t r) const {
+        if (!texture.enabled) return static_cast<std::uint8_t>(r);
+        return shadeAt(x + static_cast<int>(r & 15u) * 1031, y + static_cast<int>((r >> 4) & 15u) * 977);
+    }
     // a cell of this material with its spawn temperature
     Cell spawn(std::uint8_t shade) const {
         Cell c;

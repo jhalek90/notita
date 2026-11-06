@@ -469,6 +469,10 @@ life_min = 10
 life_max = 34
 color = #ff9a2a
 color_variation = 40
+# deep orange tongues, a bright body and the odd white-hot core pixel (picked per flame)
+palette = #d8501a*2, #f07a22*3, #ff9a2a*4, #ffc04a*3, #fff0b8*0.6
+texture = speckle
+tex_jitter = 0.5
 emissive = 2.2, 0.95, 0.22
 # #480: with the gas grid on, a flame is hot reacting gas there: one flame throw
 # stands for this much fuel vapour (energy) handed to the grid, and a brushed
@@ -487,6 +491,9 @@ life_min = 8
 life_max = 26
 color = #ffb347
 color_variation = 50
+palette = #c8501c*2, #ff8a30*3, #ffb347*4, #ffe08a*1
+texture = speckle
+tex_jitter = 0.5
 emissive = 1.9, 0.75, 0.16
 
 [etchant]
@@ -807,6 +814,10 @@ life_min = 2
 life_max = 7
 emissive = 1.5, 1.8, 2.6
 color = #dce8ff
+color_variation = 20
+palette = #8aa8ff*1, #b8ccff*2, #dce8ff*4, #ffffff*2
+texture = speckle
+tex_jitter = 0.4
 
 [oxygen]
 label = Oxygen
