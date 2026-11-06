@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Phase 4: rigid bodies made of pixels, on Box2D v3.
 //
 // A connected clump of solid pixels (4-connected) that is not held up becomes
@@ -63,6 +63,8 @@ struct RigidBody {
     int   hidden = 0;           // pixels with no room in the grid last stamp
     bool  rebuild = false;      // pixels changed: shapes must be rebuilt before the next step
     long long mass = 0;         // sum of Material::mass over the pixels
+    int   submerged = 0;        // pixels below the waterline of the liquid it touches (phase 5 buoyancy)
+    bool  floats = false;       // lighter than that liquid: it stays a body instead of freezing into pixels
 
     // world position of a pixel centre
     void toWorld(const BodyPixel& p, float& wx, float& wy) const {
@@ -87,6 +89,11 @@ struct BodyParams {
     float blastKick = 3.0f;      // px/tick of velocity a blast of power 1 gives a body at its centre
     float pxPerMeter = 32.0f;
     int   subSteps = 4;
+    // phase 5: buoyancy. Pixels below the highest liquid pixel touching the
+    // body are submerged; they get an upward force of the liquid's density
+    // times their area times gravity, at their centroid, plus drag.
+    bool  buoyancy = true;
+    float liquidDrag = 15.0f;    // per second, on the submerged share of the body's velocity (about half the critical damping of a 4 px raft)
 };
 
 struct BodyStats {
@@ -95,6 +102,7 @@ struct BodyStats {
     int displaced = 0;                          // loose pixels shoved out as particles this tick
     int hidden = 0;                             // body pixels with no room in the grid
     int terrainShapes = 0;
+    int floating = 0;                           // bodies with submerged pixels
     double stepMs = 0.0, findMs = 0.0, solveMs = 0.0;
 };
 
@@ -115,6 +123,16 @@ public:
     int releaseClump(int x, int y);
     // Drops every body: pixels are written back as plain pixels.
     void clear();
+
+    // ---- phase 5: what the player touches ----
+    // Id of the body whose stamp covers the world pixel (0 = none).
+    int bodyAt(int x, int y) const;
+    const RigidBody* body(int id) const;
+    // Velocity (px/tick) of the body's material at a world point.
+    bool velocityAt(int id, float wx, float wy, float& vx, float& vy) const;
+    // Impulse at a world point, in water-pixel masses * px/tick (one pixel of
+    // density 1000 moving 1 px/tick has 1 unit of momentum).
+    bool applyImpulse(int id, float wx, float wy, float ix, float iy);
 
     const std::vector<RigidBody>& bodies() const { return bodies_; }
     BodyParams& params() { return params_; }
@@ -143,6 +161,7 @@ private:
     void shatter(RigidBody& b);
     void buildTerrain();
     void applyGas(RigidBody& b);
+    void applyLiquid(RigidBody& b);
     void pointVelocity(const RigidBody& b, float wx, float wy, float& vx, float& vy) const;
     void eject(const Cell& cell, float x, float y, float vx, float vy);
     Rng rng(std::uint64_t salt) const;
