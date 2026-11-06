@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Brand.h"
 
 #include "script/ReactionScript.h"
 #include "sim/Scenes.h"
@@ -112,12 +113,13 @@ bool App::init() {
     electricView_ = std::max(0, opts_.electricView);
 
     // ---- window + GPU ----
+    SDL_SetAppMetadata(brand::kName, brand::kVersion, nullptr);
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return false;
     }
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    window_ = SDL_CreateWindow("Pixel sandbox (working title)", kViewW * 2, kViewH * 2,
+    window_ = SDL_CreateWindow(brand::kName, kViewW * 2, kViewH * 2,
                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
     if (!window_) {
         SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
@@ -1041,7 +1043,10 @@ void App::drawUi() {
     const SimStats& st = sim_->stats();
 
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Sandbox", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    // "###Sandbox" keeps the window's ImGui id (and its saved place in imgui.ini)
+    char sandboxTitle[64];
+    std::snprintf(sandboxTitle, sizeof sandboxTitle, "%s: sandbox###Sandbox", brand::kName);
+    ImGui::Begin(sandboxTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
     ImGui::SeparatorText("Material");
     ImGui::BeginChild("##materials", ImVec2(ImGui::GetFontSize() * 15.0f, ImGui::GetFontSize() * 14.0f));
@@ -1137,6 +1142,7 @@ void App::drawUi() {
     ImGui::SetNextWindowBgAlpha(0.6f);
     ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    ImGui::TextDisabled("%s %s, debug", brand::kName, brand::kVersion);
     float avg = 0, peak = 0;
     for (float v : tickHistory_) { avg += v; peak = std::max(peak, v); }
     avg /= static_cast<float>(tickHistory_.size());
@@ -1394,6 +1400,29 @@ bool App::writeScreenshot(const std::string& path) const {
     return static_cast<bool>(f);
 }
 
+void App::drawTitleCard() {
+    constexpr double kHold = 2.5, kFade = 1.0; // seconds
+    const double t = ImGui::GetTime();
+    if (t >= kHold + kFade) return;
+    const float a = t < kHold ? 1.0f : static_cast<float>(1.0 - (t - kHold) / kFade);
+    const ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float big = ImGui::GetFontSize() * 4.0f, small = ImGui::GetFontSize() * 1.3f;
+    const ImVec2 ts = font->CalcTextSizeA(big, FLT_MAX, 0.0f, brand::kName);
+    const ImVec2 ps = font->CalcTextSizeA(small, FLT_MAX, 0.0f, brand::kPitch);
+    const float cx = io.DisplaySize.x * 0.5f, cy = io.DisplaySize.y * 0.42f;
+    const float gap = small * 0.4f, pad = small * 1.2f;
+    const float top = cy - (ts.y + gap + ps.y) * 0.5f;
+    auto alpha = [&](float v) { return static_cast<int>(v * a); };
+    dl->AddRectFilled(ImVec2(0, top - pad), ImVec2(io.DisplaySize.x, top + ts.y + gap + ps.y + pad), IM_COL32(12, 10, 8, alpha(150)));
+    const ImVec2 tp(cx - ts.x * 0.5f, top), pp(cx - ps.x * 0.5f, top + ts.y + gap);
+    const float sh = std::max(2.0f, big * 0.04f);
+    dl->AddText(font, big, ImVec2(tp.x + sh, tp.y + sh), IM_COL32(40, 28, 16, alpha(220)), brand::kName);
+    dl->AddText(font, big, tp, IM_COL32(238, 214, 158, alpha(255)), brand::kName);
+    dl->AddText(font, small, pp, IM_COL32(220, 210, 190, alpha(230)), brand::kPitch);
+}
+
 int App::run() {
     auto last = std::chrono::steady_clock::now();
     int frame = 0;
@@ -1429,6 +1458,7 @@ int App::run() {
 
         drawOverlays(viewport_);
         drawUi();
+        drawTitleCard();
         ImGui::Render();
         ImDrawData* dd = ImGui::GetDrawData();
 
@@ -1496,7 +1526,7 @@ void App::drawWorldUi() {
     if (ImGui::Button("Load (F9)")) loadWorld();
     ImGui::SameLine();
     if (ImGui::Button("New world")) startWorld();
-    ImGui::TextDisabled("%s", savePath_.c_str());
+    ImGui::TextDisabled("%s save: %s", brand::kName, savePath_.c_str());
     if (!worldMsg_.empty()) ImGui::TextWrapped("%s", worldMsg_.c_str());
     ImGui::End();
 }

@@ -93,6 +93,10 @@ if(NOTITA_BUILD_APP)
     # phase 6 lighting: GPU pass + the App's light inputs / UI / self-test
     target_sources(notita PRIVATE src/app/GpuLight.cpp src/app/AppLight.cpp)
     target_link_libraries(notita PRIVATE notita_light)
+    # version info: the exe stays notita.exe but describes itself as Fine Grain
+    if(WIN32)
+        target_sources(notita PRIVATE src/app/notita.rc)
+    endif()
 
     # Gas grid compute kernels -> <build>/shaders/gas_<kernel>.dxil (next to the exe).
     # dxc ships with the Windows SDK; without it the app falls back to the CPU solver.
