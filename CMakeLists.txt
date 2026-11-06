@@ -28,6 +28,8 @@ add_library(notita_sim STATIC
     src/sim/Brush.cpp
     src/sim/Scenes.cpp
     src/sim/Reactions.cpp
+    src/sim/GasGrid.cpp
+    src/sim/GasSolverCpu.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
 if(MSVC)
@@ -53,7 +55,7 @@ target_link_libraries(notita_bench PRIVATE notita_sim notita_script)
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
 endif()
@@ -64,8 +66,32 @@ if(NOTITA_BUILD_APP)
         src/app/main.cpp
         src/app/Renderer.cpp
         src/app/App.cpp
+        src/app/GpuGasSolver.cpp
     )
     target_link_libraries(notita PRIVATE notita_sim notita_script imgui SDL3::SDL3-static)
+
+    # Gas grid compute kernels -> <build>/shaders/gas_<kernel>.dxil (next to the exe).
+    # dxc ships with the Windows SDK; without it the app falls back to the CPU solver.
+    find_program(NOTITA_DXC dxc HINTS "$ENV{WindowsSdkVerBinPath}x64")
+    set(NOTITA_GAS_HLSL ${CMAKE_CURRENT_SOURCE_DIR}/src/app/shaders/gas.hlsl)
+    if(NOTITA_DXC)
+        set(_gas_outputs)
+        foreach(kernel curl forces advect divergence jacobi project scale scalars)
+            string(TOUPPER ${kernel} _def)
+            set(_out ${CMAKE_BINARY_DIR}/shaders/gas_${kernel}.dxil)
+            add_custom_command(OUTPUT ${_out}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+                COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -D K_${_def} -Fo ${_out} ${NOTITA_GAS_HLSL}
+                DEPENDS ${NOTITA_GAS_HLSL}
+                COMMENT "dxc gas_${kernel}"
+                VERBATIM)
+            list(APPEND _gas_outputs ${_out})
+        endforeach()
+        add_custom_target(notita_shaders ALL DEPENDS ${_gas_outputs})
+        add_dependencies(notita notita_shaders)
+    else()
+        message(WARNING "dxc not found: the gas grid will run on the CPU solver only")
+    endif()
     if(MSVC)
         target_compile_options(notita PRIVATE /W4 /permissive- /utf-8)
         set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT notita)

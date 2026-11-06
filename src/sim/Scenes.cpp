@@ -144,6 +144,55 @@ void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     hot("sand", 1350.0f, 560, 290, 620, 351);
 }
 
+void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
+    Rng rng(seed);
+    w.clear();
+    const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
+    auto id = [&](const char* n) { return mats.idOf(n); };
+    const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
+    auto rect = [&](const char* m, int x0, int y0, int x1, int y1) {
+        fillSpawn(w, mats, id(m), vx + x0, vy + y0, vx + x1, vy + y1, rng);
+    };
+    auto hot = [&](const char* m, float t, int x0, int y0, int x1, int y1) {
+        fillRect(w, id(m), vx + x0, vy + y0, vx + x1, vy + y1, rng, t);
+    };
+    fillRect(w, id("bedrock"), X, Y + H - 8, X + W - 1, Y + H - 1, rng); // floor
+
+    // 1. a pot of water on magma under a frost lid: steam rises, condenses on the lid and drips back
+    rect("slate", 10, 236, 150, 241);   // lid holder
+    rect("frost", 20, 242, 140, 249);
+    rect("slate", 20, 300, 25, 351);
+    rect("slate", 135, 300, 140, 351);
+    rect("iron", 26, 336, 134, 340);    // pot floor
+    rect("magma", 26, 341, 134, 351);
+    rect("water", 26, 300, 134, 335);
+
+    // 2. a chimney over a fire: smoke and hot air go up the flue
+    rect("slate", 180, 200, 185, 330);
+    rect("slate", 225, 200, 230, 330);
+    rect("slate", 170, 345, 240, 351);
+    rect("timber", 190, 330, 220, 344);
+    hot("timber", 700.0f, 195, 330, 215, 336);
+
+    // 3. a cave with hydrogen under its roof and sand heaps; a burning post lights it after a while
+    rect("slate", 270, 230, 430, 236);  // roof
+    rect("slate", 270, 237, 275, 351);
+    rect("slate", 425, 237, 430, 300);
+    rect("hydrogen", 276, 237, 424, 252);
+    rect("sand", 290, 320, 340, 351);
+    rect("sand", 360, 330, 410, 351);
+    rect("timber", 410, 320, 414, 351); // a burning post; its flames reach the gas after a while
+    hot("timber", 700.0f, 410, 340, 414, 351);
+
+    // 4. heavy murk spills off a shelf into a pit with a pond
+    rect("slate", 470, 260, 620, 265);
+    rect("slate", 470, 230, 475, 259);
+    rect("murk", 476, 200, 600, 259);
+    rect("slate", 500, 300, 505, 351);
+    rect("slate", 615, 300, 620, 351);
+    rect("water", 506, 330, 614, 351);
+}
+
 void flipVertical(World& w) {
     const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
     for (int y = 0; y < H / 2; ++y)

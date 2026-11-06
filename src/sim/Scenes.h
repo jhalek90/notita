@@ -27,6 +27,12 @@ void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 // (the benchmark worst case with heat on).
 void thermalChurn(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 
+// Gas playground (phase 3): a boiling pot under a frost lid, a chimney over a
+// fire, a cave with hydrogen under its roof that a burning post
+// lights, and heavy murk
+// spilling into a pit.
+void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed);
+
 // Turn the world upside down (sustained benchmark load: everything falls again).
 void flipVertical(World& w);
 

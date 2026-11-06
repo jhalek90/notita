@@ -6,7 +6,10 @@ the game itself still needs its own name (the window says "working title").
 Phase 1 is the engine core: a chunked, multithreaded falling-sand
 simulation, data-driven materials, a GPU-presented 640x360 view and sandbox
 brushes. Phase 2 adds per-pixel heat, state changes, fire and a reaction table
-written in Luau. The full plan lives in Corvid note N249.
+written in Luau. Phase 3 adds the gas grid: smoke, steam and other gases
+flow on a velocity/pressure grid (GPU compute, with a CPU reference), with
+buoyancy, convection, burning gas and explosions. The full plan lives in
+Corvid note N249.
 
 ## Build (Windows, MSVC)
 
@@ -40,13 +43,16 @@ build\notita.exe                  :: demo scene
 build\notita.exe --scene forge    :: heat playground: magma, fire, etchant, frost
 build\notita.exe --scene churn    :: whole world full of moving material
 build\notita.exe --scene thermal  :: churn with hot and cold materials mixed in
+build\notita.exe --scene gas      :: gas lab: boiling pot, chimney, hydrogen cave, heavy gas
 build\notita.exe --scene empty
+build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
 build\notita_bench.exe [ticks] [threads...]
 ```
 
 Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`
-(run N frames, save the sim view, quit: handy for smoke tests).
+(run N frames, save the sim view, quit: handy for smoke tests),
+`--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`.
 
 Controls:
 
@@ -65,6 +71,8 @@ Controls:
 | `R` / `F` / `B` / `C` | demo scene / forge scene / full churn scene / clear |
 | F3 / F4 | chunk grid / dirty rects overlay |
 | F5 | temperature view (hot pixels also glow in the normal view) |
+| F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
+| `G` / `X` / `V` | gas grid on/off / blast at the cursor / gas lab scene |
 | Tab or F1 | hide the panels |
 
 ## Layout
@@ -77,11 +85,14 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   Simulator.*   4-pass checkerboard tick, CA rules
   Material.*    material registry + data file parser (heat, state changes, fire, mass)
   Reactions.*   reaction table (plain data the tick looks up)
-  GasExchange.h hook for the phase 3 gas grid (takes created gas mass and ambient heat)
+  GasExchange.h hook the gas grid plugs into (takes created gas mass and ambient heat)
+  GasGrid.*     phase 3 gas grid: fields, pixel coupling, explosions
+  GasSolverCpu.cpp  the grid math on the CPU (reference for the GPU kernels)
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
 src/app/      SDL3 window, GPU presentation, ImGui panels
+  GpuGasSolver.*, shaders/gas.hlsl   the gas grid math as SDL3 GPU compute kernels
 src/bench/    headless benchmark
 tests/        unit tests (tiny built-in harness)
 data/materials.txt   material definitions (keys documented at the top)
@@ -144,6 +155,45 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   gas the sim creates (mass + temperature) and the heat air loses to the
   ambient; emissions are gathered per chunk and delivered in chunk order.
 
+## Gas grid (phase 3)
+
+- **The grid.** One cell per 4x4 pixels (256x128 cells for the app's
+  1024x512 world). Velocity lives on cell faces (a MAC grid), in cells per
+  tick. Each tick, after the pixel tick: buoyancy (hot gas and gas lighter
+  than air rise, heavy gas sinks), vorticity confinement for swirls,
+  semi-Lagrangian advection of the velocity, a Jacobi pressure solve (40
+  iterations) and projection, then transport of gas mass and heat.
+- **Two solvers, same kernels.** `CpuGasSolver` (src/sim, threaded, used by
+  the tests and the benchmark) and `GpuGasSolver` (src/app, SDL3 GPU compute,
+  src/app/shaders/gas.hlsl built with the Windows SDK's dxc into
+  `build/shaders/*.dxil`). The app uses the GPU one when the device takes
+  DXIL and the shaders are there, else the CPU one (`--gas-cpu` forces it).
+  `notita --gas-selftest` runs both from the same state and compares.
+- **Mass is exact.** Gas mass is fixed point (4096 per `mass` unit) and moves
+  only as integer face fluxes: each face's flux is computed by both cells
+  with the same expression, and a cell never sends out more than it holds.
+  So pixels + grid keep the same total mass every tick, on the GPU too.
+- **Pixels and grid.** Solid, liquid and powder pixels are obstacles (a block
+  with no air, gas or flame pixel is closed). Every gas the sim makes
+  (boiling, burning, reactions) goes into the grid through `GasExchange`;
+  gas pixels painted with a brush are taken in on the next tick. Gas cooled
+  below its `condense_point` falls back out as pixels into air in its block
+  (steam rains back as water, smoke drops ash). Air pixels and their grid
+  cell trade heat, so hot air rises and warms the ceiling (convection); with
+  the grid on, the pixel sim's own air cooling is switched off and the grid
+  loses a little heat to the ambient instead (counted, so tests can check
+  the energy balance).
+- **Pressure on pixels.** Fast gas moves the liquid and powder pixels it
+  blows against. A pocket packed denser than about 1.2 units per pixel
+  (gas trapped under or behind something) shoves the line of loose pixels
+  next to it one pixel outwards, towards thinner gas.
+- **Fire and explosions.** Flammable grid gas (hydrogen, murk) burns where it
+  is hot enough or touches a flame, turns into its `burns_into` gas, heats
+  and expands; a burning cell lights its neighbours next tick, so a cloud
+  goes up as a front. `X` (or `GasGrid::explode`) sets off a blast: an
+  expansion source, heat and a radial kick in the grid, and the loose pixels
+  in the radius are thrown outwards.
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -167,3 +217,18 @@ Phase 2 numbers, Ryzen 7 3800X, Release, 900 ticks, mean ms per tick:
 With every thread, a full screen of moving, heat-conducting material takes
 about 1.8 ms of the 16.7 ms budget at 60 Hz. Phase 1 details are in Corvid
 note N250; phase 2 details in the #468 note.
+
+Phase 3 rows, gas grid on (CPU solver, 160x96 cells, 40 pressure
+iterations; the number includes the grid step):
+
+| scene | 1 thread | 4 threads | 16 threads | of which grid (16 thr) |
+| --- | --- | --- | --- | --- |
+| gaslab | 10.70 | 3.84 | 4.26 | 3.72 (solve 2.64) |
+| thermal+gas | 24.61 | 7.75 | 6.40 | 5.05 (solve 2.70) |
+
+"thermal+gas" is the thermal worst case with every gas it makes (steam from
+boiling, smoke, fumes, hydrogen) going into the grid; the coupling then also
+pushes a lot of pixels. The CPU solver stops scaling past 4 threads (each of
+its ~47 kernels is one parallel-for). In the app the grid runs on the GPU:
+`notita --gas-selftest` measured about 1.4 ms per step on the 256x128 grid,
+upload, 47 dispatches and download included (it waits for the result).
