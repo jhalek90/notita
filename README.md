@@ -102,6 +102,7 @@ Controls:
 | F4 | lighting on/off (Lighting panel: GPU/CPU, ambient, sky, gain, haze, bloom) |
 | F5 | temperature view (hot pixels also glow in the normal view) |
 | F10 | old / new look and motion: liquids as pixels and the phase 1 powder/liquid rules vs smooth liquids and smooth grains ("Look & motion" panel has each switch) |
+| F11 | old / new flames: flame pixels vs flames as hot glowing gas on the gas grid ("Flames" panel has the knobs) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
 | `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
@@ -498,6 +499,32 @@ look per material lives in data/materials.txt (`look_deep`, `look_depth`,
 it is off in the temperature, gas and electricity views, and without the
 compiled shader (no dxc) liquids keep the smooth depth colours as pixels.
 `--old-look` / `--old-motion` start with the old drawing / rules.
+
+## How flames work
+
+A flame is hot, reacting gas, so with the gas grid on it lives there instead
+of in pixels. A burning pixel no longer throws flame pixels: each tick it
+hands the grid fuel vapour (energy, no mass: `flame_chance` x the flame
+material's `flame_fuel`) at the air cell it draws through, and now and then an
+ember (the flame's `ember` material) still flies off as a pixel. On the grid
+the fuel rides the velocity field (so buoyancy and vorticity confinement make
+it lick and swirl) and burns where it is lit: a burning pixel or ember in the
+block, a neighbour that burnt last tick, or hot enough (`fuelIgnite`). Smoke
+and other inert gas in the block slow it down, oxygen speeds it up. The energy
+becomes heat and expansion of the cell (counted in the grid's `sourceHeat`),
+plus a little soot. Burning grid gas (hydrogen) is a flame the same way, and
+blasts drop fireball fuel. Mass is untouched: the smoke and ash still come from
+the pixel when it burns out.
+
+The look is drawn on the GPU (`src/app/shaders/flame.hlsl`, `GpuFlame`) at
+screen resolution from the grid fields over the view: a cubic B-spline (no 4x4
+blocks), a noise warp that scrolls upwards (licking edges), a blackbody ramp
+from the temperature of the burning gas (deep red, orange, yellow, white,
+white-blue when very hot), added on top with a soft shoulder, soot darkening
+where it doesn't glow, and a per-fuel tint (`flame_tint = r, g, b[, strength]`,
+e.g. hydrogen burns pale blue). The flames also emit light into the lighting
+pass. Without the shader they are drawn at sim resolution on the CPU. F11 or
+`--old-flames` switches back to flame pixels.
 
 ## The showcase building
 

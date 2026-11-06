@@ -85,7 +85,8 @@ bool GpuLiquid::ensure(int w, int h, int scale) {
     SDL_GPUTextureCreateInfo tci{};
     tci.type = SDL_GPU_TEXTURETYPE_2D;
     tci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+    // read by the flame pass (#480) as well
+    tci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ;
     tci.width = static_cast<Uint32>(ow_);
     tci.height = static_cast<Uint32>(oh_);
     tci.layer_count_or_depth = 1;

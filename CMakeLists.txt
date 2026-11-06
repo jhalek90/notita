@@ -74,7 +74,7 @@ endif()
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp tests/test_flames.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
     target_sources(notita_tests PRIVATE tests/test_light.cpp)
@@ -94,6 +94,8 @@ if(NOTITA_BUILD_APP)
     target_sources(notita PRIVATE src/app/GpuLight.cpp src/app/AppLight.cpp)
     # #477: the liquid surface pass (GpuLiquid + its App side)
     target_sources(notita PRIVATE src/app/GpuLiquid.cpp src/app/AppLiquid.cpp)
+    # #480: the flame pass (GpuFlame + its App side)
+    target_sources(notita PRIVATE src/app/GpuFlame.cpp src/app/AppFlame.cpp)
     target_link_libraries(notita PRIVATE notita_light)
     # version info: the exe stays notita.exe but describes itself as Fine Grain
     if(WIN32)
@@ -138,6 +140,16 @@ if(NOTITA_BUILD_APP)
             COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -Fo ${_out} ${NOTITA_LIQUID_HLSL}
             DEPENDS ${NOTITA_LIQUID_HLSL}
             COMMENT "dxc liquid"
+            VERBATIM)
+        list(APPEND _gas_outputs ${_out})
+        # flame pass -> <build>/shaders/flame.dxil (without it: flames at sim resolution on the CPU)
+        set(NOTITA_FLAME_HLSL ${CMAKE_CURRENT_SOURCE_DIR}/src/app/shaders/flame.hlsl)
+        set(_out ${CMAKE_BINARY_DIR}/shaders/flame.dxil)
+        add_custom_command(OUTPUT ${_out}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+            COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -Fo ${_out} ${NOTITA_FLAME_HLSL}
+            DEPENDS ${NOTITA_FLAME_HLSL}
+            COMMENT "dxc flame"
             VERBATIM)
         list(APPEND _gas_outputs ${_out})
         add_custom_target(notita_shaders ALL DEPENDS ${_gas_outputs})

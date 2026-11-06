@@ -1,6 +1,7 @@
 #pragma once
 // The sandbox app: window, input, fixed 60 Hz sim loop, brushes, rendering
 // and the ImGui panels (sandbox tools + debug overlay).
+#include "GpuFlame.h"
 #include "GpuGasSolver.h"
 #include "GpuLight.h"
 #include "GpuLiquid.h"
@@ -49,6 +50,7 @@ struct AppOptions {
     bool oldLook = false;       // #477: start with liquids drawn as pixels (F10 flips)
     bool oldMotion = false;     // #477: start with the phase 1 powder / liquid rules (F10 flips)
     bool lockstep = false;      // exactly one sim tick per frame (comparable screenshots)
+    bool oldFlames = false;     // #480: start with flames as pixels (F11 flips)
     bool at = false;            // --at x,y: put the player (feet) there at start (screenshots of a room)
     float atX = 0, atY = 0;
 };
@@ -205,7 +207,7 @@ private:
     void markLiquidParticle(int vx, int vy, MaterialId m);
     void clearLiquidInfo(int vx, int vy);
     int  liquidScale() const;
-    bool recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit); // true when it drew the frame
+    bool recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit, bool present = true); // true when it drew the frame
     bool liquidScreenshot(const std::string& path);
     void setNewLookAndMotion(bool on);
     void drawLiquidUi();
@@ -219,6 +221,29 @@ private:
     bool newLook_ = true, newMotion_ = true, smoothPowder_ = true, calmLiquid_ = true, liquidWobble_ = true;
     bool liquidDrawn_ = false;
     float liquidTime_ = 0.0f;
+
+    // ---- #480: flames as hot glowing gas on the grid (AppFlame.cpp) ----
+    void initFlame();         // after initLiquid: tints + the GPU flame pass
+    void setNewFlames(bool on);
+    bool flameActive() const; // new flames on, the grid on, and the normal view
+    void buildFlameCells();   // in drawWorld: the grid fields over the view
+    void flameAt(int x, int y, float out[3]) const;
+    void drawFlamesCpu();     // no GPU pass: flames into the view pixels
+    void addFlameLight();     // in prepareLight: the flames' emission
+    bool recordFlame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit, bool liquid); // true when it drew the frame
+    bool flameScreenshot(const std::string& path);
+    void drawFlameUi();
+    std::unique_ptr<GpuFlame> gpuFlame_; // null when the GPU pass is unavailable
+    std::string gpuFlameError_;
+    bool newFlames_ = true, flameAny_ = false, flameDrawn_ = false;
+    std::vector<FlameCell> flameCells_;
+    std::vector<float> flameEmit_;           // per cell rgb: flame colour x intensity (no noise)
+    int flameCW_ = 0, flameCH_ = 0, flameI0_ = 0, flameJ0_ = 0;
+    float flameOffX_ = 0, flameOffY_ = 0;
+    FlameLook flameLook_;
+    float flameLightGain_ = 0.45f;            // the flames' light (with the GPU pass drawing the flame itself)
+    std::vector<std::uint8_t> flameTintIdx_; // per material: tint slot (0 = none)
+    std::array<std::array<float, 4>, kFlameTints> flameTints_{};
 
     std::array<float, 120> tickHistory_{};
     int tickHistoryPos_ = 0;

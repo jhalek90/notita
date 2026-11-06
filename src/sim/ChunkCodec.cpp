@@ -90,7 +90,7 @@ std::uint8_t terrainShade(int x, int y) {
 namespace {
 
 constexpr std::uint8_t kCellFormat = 1;
-constexpr std::uint8_t kGasFormat = 1;
+constexpr std::uint8_t kGasFormat = 2; // 2 (#480): + fuel and soot planes; 1 still reads
 
 void plane(ByteWriter& w, const std::uint8_t* p, std::size_t n) {
     std::vector<std::uint8_t> enc;
@@ -264,6 +264,10 @@ std::vector<std::uint8_t> encodeGas(const GasGrid::ChunkCells& g) {
     planes4(w, g.open.data(), S);
     planes4(w, g.src.data(), S);
     plane(w, g.burnt.data(), S);
+    std::vector<float> zero;
+    if (g.fuel.size() < S || g.soot.size() < S) zero.assign(S, 0.0f);
+    planes4(w, g.fuel.size() >= S ? g.fuel.data() : zero.data(), S);
+    planes4(w, g.soot.size() >= S ? g.soot.data() : zero.data(), S);
     return std::move(w.buf);
 }
 
@@ -271,7 +275,8 @@ bool decodeGas(const std::vector<std::uint8_t>& blob, GasGrid::ChunkCells& g, in
                const std::vector<int>* speciesRemap) {
     constexpr std::size_t S = GasGrid::kChunkCellsSide * GasGrid::kChunkCellsSide;
     ByteReader r(blob.data(), blob.size());
-    if (r.u8() != kGasFormat) return false;
+    const std::uint8_t format = r.u8();
+    if (format != 1 && format != kGasFormat) return false;
     const int ns = r.u8();
     g = GasGrid::ChunkCells{};
     if (r.u8() == 0) return r.ok();
@@ -289,6 +294,11 @@ bool decodeGas(const std::vector<std::uint8_t>& blob, GasGrid::ChunkCells& g, in
         !readPlanes4(r, g.p.data(), S) || !readPlanes4(r, g.extra.data(), S) || !readPlanes4(r, g.open.data(), S) ||
         !readPlanes4(r, g.src.data(), S) || !readPlane(r, g.burnt.data(), S))
         return false;
+    if (format >= 2) {
+        g.fuel.resize(S);
+        g.soot.resize(S);
+        if (!readPlanes4(r, g.fuel.data(), S) || !readPlanes4(r, g.soot.data(), S)) return false;
+    }
     return r.ok() && r.atEnd();
 }
 

@@ -40,6 +40,7 @@ App::~App() {
     gpuGas_.reset(); // its GPU buffers must go before the device does (it was released after ~App, on a dead device)
     gpuLight_.reset();
     gpuLiquid_.reset();
+    gpuFlame_.reset();
     if (imguiReady_) {
         ImGui_ImplSDL3_Shutdown();
         ImGui_ImplSDLGPU3_Shutdown();
@@ -167,6 +168,7 @@ bool App::init() {
     }
     initLighting();
     initLiquid();
+    initFlame();
 
     // ---- Dear ImGui ----
     IMGUI_CHECKVERSION();
@@ -574,6 +576,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_F4) lightOn_ = !lightOn_;
         else if (k == SDLK_F5) showTemp_ = !showTemp_;
         else if (k == SDLK_F10) setNewLookAndMotion(!(newLook_ && smoothPowder_ && calmLiquid_));
+        else if (k == SDLK_F11) setNewFlames(!newFlames_);
         else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
         else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
         else if (k == SDLK_V) loadScene("gas");
@@ -678,6 +681,8 @@ void App::tickSim() {
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->params().smoothPowder = smoothPowder_; // #477 old/new toggle (F10)
     sim_->params().calmLiquid = calmLiquid_;
+    sim_->params().gridFlames = newFlames_; // #480 old/new toggle (F11)
+    gas_->params().gridFlames = newFlames_;
     sim_->tick();
     electric_->setPlayer(playerOn_ ? player_.get() : nullptr);
     electric_->step();
@@ -826,6 +831,8 @@ void App::drawWorld() {
     shadeLiquids();
     drawParticles();
     drawGas();
+    buildFlameCells();
+    drawFlamesCpu();
     drawPlayer();
     drawElectric();
     prepareLight();
@@ -1143,6 +1150,7 @@ void App::drawUi() {
     drawGasUi();
     drawLightUi();
     drawLiquidUi();
+    drawFlameUi();
     drawPhase4Ui();
     drawPlayerUi();
     drawWorldUi();
@@ -1477,7 +1485,16 @@ int App::run() {
         if (swap) {
             const bool lit = recordLight(cmd); // the GPU lighting writes the view texture itself
             liquidDrawn_ = false;
-            if (!recordLiquid(cmd, swap, lit)) renderer_.record(cmd, swap, sw, sh, viewport_, !lit);
+            flameDrawn_ = false;
+            const bool flame = flameActive() && gpuFlame_ && flameAny_; // #480: the flame pass presents the frame
+            const bool liquid = recordLiquid(cmd, swap, lit, !flame);
+            if (liquid && !liquidDrawn_) {
+                // the liquid pass failed and presented the plain view itself
+            } else if (flame) {
+                recordFlame(cmd, swap, lit, liquid);
+            } else if (!liquid) {
+                renderer_.record(cmd, swap, sw, sh, viewport_, !lit);
+            }
             ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
             SDL_GPUColorTargetInfo target{};
             target.texture = swap;
@@ -1491,7 +1508,7 @@ int App::run() {
 
         if (opts_.frames > 0 && ++frame >= opts_.frames) {
             // #477: with the liquid surface pass on, the shot is its full-resolution output
-            const bool hires = !opts_.screenshot.empty() && liquidScreenshot(opts_.screenshot);
+            const bool hires = !opts_.screenshot.empty() && (flameScreenshot(opts_.screenshot) || liquidScreenshot(opts_.screenshot));
             if (!opts_.screenshot.empty() && !hires) lightScreenshot();
             if (!opts_.screenshot.empty() && !hires && !writeScreenshot(opts_.screenshot))
                 SDL_Log("could not write %s", opts_.screenshot.c_str());

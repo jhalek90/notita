@@ -59,6 +59,12 @@ struct SimParams {
     // #477: resting liquids only flow sideways on a flat surface with momentum or as a
     // lone drop, so a calm pool's top row doesn't flicker (false = the phase 1 rule)
     bool  calmLiquid = true;
+    // #480: with a gas exchange that takes flames, a burning pixel hands its flame to the
+    // grid as fuel vapour (flame_chance x the flame material's flame_fuel, per tick)
+    // instead of throwing flame pixels; a few still fly as embers (the flame's `ember`)
+    bool  gridFlames = true;
+    float flameFuel = 1.0f;      // scales that fuel
+    float emberChance = 0.05f;   // share of the old flame throws that still happen, as embers
 };
 
 // Per-material values the tick needs, precomputed from the registry.
@@ -73,6 +79,8 @@ struct ThermalProps {
     float burnDT = 0.0f, burnMax = 0.0f;
     std::uint32_t flame16 = 0, residue16 = 0;
     MaterialId burnsInto = kEmpty, residue = kEmpty, flame = kEmpty;
+    float fuel = 0.0f;         // #480: fuel per burning tick handed to the grid (0 = throw flame pixels)
+    MaterialId ember = kEmpty; // #480: what still flies off as pixels with grid flames
     float spawnTemp = kAmbientTemp;
     int   lifeMin = 1, lifeMax = 1;
     bool  events = false;      // has any change / fire behaviour

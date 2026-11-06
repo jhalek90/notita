@@ -212,7 +212,7 @@ void App::clearLiquidInfo(int vx, int vy) {
 
 int App::liquidScale() const { return std::clamp(static_cast<int>(std::lround(viewport_.scale)), 1, 4); }
 
-bool App::recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit) {
+bool App::recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit, bool present) {
     if (!liquidActive() || !gpuLiquid_) return false;
     if (!lit) renderer_.upload(cmd);
     liquidTime_ = static_cast<float>(SDL_GetTicks()) / 1000.0f;
@@ -220,7 +220,8 @@ bool App::recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit
         renderer_.record(cmd, swap, 0, 0, viewport_, false);
         return true;
     }
-    renderer_.blit(cmd, gpuLiquid_->output(), gpuLiquid_->outW(), gpuLiquid_->outH(), swap, viewport_);
+    // present = false: the flame pass (#480) reads the output and presents instead
+    if (present) renderer_.blit(cmd, gpuLiquid_->output(), gpuLiquid_->outW(), gpuLiquid_->outH(), swap, viewport_);
     liquidDrawn_ = true;
     return true;
 }
