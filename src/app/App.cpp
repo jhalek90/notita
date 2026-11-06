@@ -1,4 +1,4 @@
-#include "App.h"
+﻿#include "App.h"
 
 #include "script/ReactionScript.h"
 #include "sim/Scenes.h"
@@ -632,7 +632,7 @@ void App::drawGasUi() {
                 gpuGas_ && useGpuGas_ ? "upload+kernels+download" : "threads", gs.coupleMs);
     ImGui::Text("grid %dx%d, %.0f mass units of gas", gas_->fields().w, gas_->fields().h, grams);
     ImGui::Text("max speed %.2f px/tick, max |p| %.2f", gs.maxSpeed * kGasCell, gs.maxPressure);
-    ImGui::Text("in %lld, condensed %lld, burnt %lld, pushed %d px", gs.absorbed, gs.condensed, gs.burned, gs.pushed);
+    ImGui::Text("in %lld, condensed %lld, burnt %lld, pushed %d px, %d shoves", gs.absorbed, gs.condensed, gs.burned, gs.pushed, gs.shoved);
     int wx, wy;
     if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
         const int i = (wx - gas_->originX()) / kGasCell, j = (wy - gas_->originY()) / kGasCell;

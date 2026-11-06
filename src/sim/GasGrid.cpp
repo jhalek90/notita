@@ -117,6 +117,8 @@ void GasGrid::clear() {
     std::fill(f_.mass.begin(), f_.mass.end(), 0);
     std::fill(f_.heat.begin(), f_.heat.end(), 0.0f);
     std::fill(extraSrc_.begin(), extraSrc_.end(), 0.0f);
+    std::fill(burnt_.begin(), burnt_.end(), std::uint8_t{0});
+    blasts_.clear();
 }
 
 // --------------------------------------------------------------------------
@@ -427,6 +429,96 @@ void GasGrid::applyBlast(const Blast& b) {
         }
 }
 
+// Gas pressure on pixels. The solver is incompressible, so gas that piles
+// up in a pocket (boiling under water, a sealed room filling with smoke)
+// shows up as concentration. Above pocketPressure units per open pixel the
+// pocket pushes: a line of liquid or powder next to it moves one pixel
+// outwards, into the first air pixel along that line, and the pocket gains
+// that pixel. Light pockets push up first, heavy ones down. Serial: a line
+// can be long and cross block rows.
+void GasGrid::expandPockets() {
+    stats_.shoved = 0;
+    const float thr = params_.pocketPressure;
+    if (thr <= 0.0f || params_.pocketReach <= 0) return;
+    const int w = f_.w, h = f_.h, ns = f_.species;
+    for (int j = 0; j < h; ++j)
+        for (int i = 0; i < w; ++i) {
+            const int c = j * w + i;
+            if (f_.open[c] <= 0.0f) continue;
+            const bool nearLoose = loose_[c] || (i > 0 && loose_[c - 1]) || (i + 1 < w && loose_[c + 1]) ||
+                                   (j > 0 && loose_[c - w]) || (j + 1 < h && loose_[c + w]);
+            if (!nearLoose) continue;
+            float total = 0.0f, light = 0.0f;
+            for (int k = 0; k < ns; ++k) {
+                total += static_cast<float>(f_.m(k, c));
+                light += sp_.light[k] * static_cast<float>(f_.m(k, c));
+            }
+            const float conc = total / (f_.open[c] * kGasCellPx * kGasMassOne);
+            if (conc <= thr) continue;
+            Rng rng = cellRng(c, 11);
+            const int tries = std::min(6, static_cast<int>((conc - thr) * 6.0f) + 1);
+            // push towards thinner gas: the weight of a side is the concentration
+            // drop to that neighbour (a filled block counts as 0), a little more
+            // along buoyancy
+            const int up = light >= 0.0f ? -1 : 1;
+            static constexpr int kDx[4] = {1, -1, 0, 0}, kDy[4] = {0, 0, -1, 1};
+            float wgt[4] = {0, 0, 0, 0}, sum = 0.0f;
+            for (int d = 0; d < 4; ++d) {
+                const int ni = i + kDx[d], nj = j + kDy[d];
+                if (ni < 0 || nj < 0 || ni >= w || nj >= h) continue;
+                const int nc = nj * w + ni;
+                if (!loose_[nc] && !loose_[c]) continue;
+                float nconc = 0.0f;
+                if (f_.open[nc] > 0.0f) {
+                    for (int k = 0; k < ns; ++k) nconc += static_cast<float>(f_.m(k, nc));
+                    nconc /= f_.open[nc] * kGasCellPx * kGasMassOne;
+                }
+                wgt[d] = std::max(0.0f, conc - nconc) * (kDy[d] == up ? 1.5f : 1.0f);
+                sum += wgt[d];
+            }
+            if (sum <= 0.0f) continue;
+            for (int t = 0; t < tries; ++t) {
+                float pick = rng.unit() * sum;
+                int dir = 0;
+                while (dir < 3 && pick >= wgt[dir]) pick -= wgt[dir++];
+                const int dx = kDx[dir], dy = kDy[dir];
+                // an air pixel of the pocket with a loose pixel right next to it in that direction
+                // (the block's 16 pixels from a random start)
+                const int start = static_cast<int>(rng.below(kGasCellPx));
+                int sx = 0, sy = 0;
+                Cell* l = nullptr;
+                for (int q = 0; q < kGasCellPx && !l; ++q) {
+                    const int idx = (start + q) % kGasCellPx;
+                    sx = ox_ + i * kGasCell + idx % kGasCell;
+                    sy = oy_ + j * kGasCell + idx / kGasCell;
+                    Cell* s = px(sx, sy);
+                    Cell* nb = px(sx + dx, sy + dy);
+                    if (s && nb && s->material == kEmpty && looseKind(mats_[nb->material].kind)) l = nb;
+                }
+                if (!l) continue;
+                // the first air pixel past the line of loose pixels
+                int n = 1;
+                Cell* e = nullptr;
+                for (; n <= params_.pocketReach; ++n) {
+                    Cell* q = px(sx + dx * (n + 1), sy + dy * (n + 1));
+                    if (!q) break;
+                    if (q->material == kEmpty) { e = q; break; }
+                    if (!looseKind(mats_[q->material].kind)) break;
+                }
+                if (!e) continue;
+                // shift the line one pixel outwards; the far air pixel ends up next to the pocket
+                const Cell air = *e;
+                for (int k = n + 1; k > 1; --k) {
+                    *px(sx + dx * k, sy + dy * k) = *px(sx + dx * (k - 1), sy + dy * (k - 1));
+                    wakePx(sx + dx * k, sy + dy * k);
+                }
+                *l = air;
+                wakePx(sx + dx, sy + dy);
+                ++stats_.shoved;
+            }
+        }
+}
+
 void GasGrid::explode(int x, int y, int radius, float power) {
     if (f_.w <= 0 || radius <= 0 || power <= 0.0f) return;
     blasts_.push_back({x, y, radius, power});
@@ -504,6 +596,7 @@ void GasGrid::step() {
     stats_.solveMs = msSince(t1);
     const auto t2 = std::chrono::steady_clock::now();
     pushPixels();
+    expandPockets();
     stats_.pushMs = msSince(t2);
     float ms = 0, mp = 0;
     for (int j = 0; j < f_.h; ++j)

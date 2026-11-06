@@ -1,4 +1,4 @@
-// Phase 3 tests: the gas grid. The solver math runs on CpuGasSolver (the
+﻿// Phase 3 tests: the gas grid. The solver math runs on CpuGasSolver (the
 // reference the GPU kernels mirror), so none of this needs a GPU.
 #include "test.h"
 
@@ -29,6 +29,12 @@ color = #808080
 kind = powder
 density = 1600
 color = #d0b060
+
+[clay]
+kind = powder
+density = 1800
+slide = 0
+color = #a07050
 
 [water]
 kind = liquid
@@ -330,6 +336,46 @@ TEST_CASE(gas_grid_explosion_throws_sand_and_keeps_mass) {
     }
     CHECK(exact);
     CHECK(f.grid->sourceHeat() > 0.0);
+}
+
+TEST_CASE(gas_pocket_pressure_pushes_a_clay_plug) {
+    // a sealed room packed with gas; a side tunnel holds a clay plug with an
+    // air gap behind it and a closed end. The pressure packs the plug into the gap.
+    auto plugLeft = [](bool pressure, long long& shoved) {
+        GasFixture f(2, 1);
+        if (!pressure) f.grid->params().pocketPressure = 0.0f;
+        f.box(4, 10, 40, 50);             // its right wall is x = 41; the plug opens it
+        f.fill("stone", 41, 29, 71, 29);  // tunnel roof
+        f.fill("stone", 41, 38, 71, 38);  // tunnel floor
+        f.fill("stone", 71, 30, 71, 37);  // closed end
+        f.fill("clay", 41, 30, 58, 37);   // the plug (a powder that never slides); x 59..70 is air
+        f.tick();
+        // 6 units of gas per pixel in the room
+        std::vector<GasEmission> e;
+        for (int y = 10; y <= 50; ++y)
+            for (int x = 4; x <= 40; ++x) e.push_back({x, y, f.id("fizz"), 6, 20.0f});
+        f.grid->absorb(e.data(), e.size());
+        const std::int64_t mass0 = f.totalMass();
+        bool exact = true;
+        shoved = 0;
+        for (int t = 0; t < 300; ++t) {
+            f.tick();
+            shoved += f.grid->stats().shoved;
+            exact = exact && f.totalMass() == mass0;
+        }
+        CHECK(exact);
+        int left = 0; // sand still in the first 8 columns of the tunnel
+        for (int y = 30; y <= 37; ++y)
+            for (int x = 41; x <= 48; ++x) left += f.world->material(x, y) == f.id("clay");
+        return left;
+    };
+    long long shoved = 0, none = 0;
+    const int withPressure = plugLeft(true, shoved), without = plugLeft(false, none);
+    std::printf("    clay near the room: %d with pocket pressure (%lld shoves), %d without\n", withPressure, shoved, without);
+    CHECK(none == 0);
+    CHECK(shoved > 20);
+    CHECK(without >= 60);
+    CHECK(withPressure < without - 16);
 }
 
 TEST_CASE(gas_grid_flammable_gas_burns_into_steam) {

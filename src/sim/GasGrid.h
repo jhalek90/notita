@@ -121,6 +121,8 @@ struct GasGridParams {
     float burnExpansion = 0.004f; // expansion per energy unit released by burning gas
     float burnRate = 0.5f;        // fraction of a burning gas that burns per tick
     float pushThreshold = 0.45f;  // gas speed (cells/tick) above which it moves liquids and powders
+    float pocketPressure = 1.2f;  // gas units per open pixel above which a pocket shoves loose pixels away
+    int   pocketReach = 32;       // longest line of liquid/powder a pocket can shift by one pixel
     float push = 0.6f;            // chance scale for that push
     bool  absorbGasPixels = true; // gas pixels of a grid species (brushes, old saves) are taken in
 };
@@ -132,6 +134,7 @@ struct GasGridStats {
     long long condensed = 0;  // pixels condensed back out this tick
     long long burned = 0;     // units burnt this tick
     int pushed = 0;           // pixels moved by the gas this tick
+    int shoved = 0;           // lines of pixels a dense gas pocket shifted outwards this tick
     float maxSpeed = 0, maxPressure = 0;
 };
 
@@ -185,6 +188,7 @@ private:
     void condense();
     void buildSources();
     void pushPixels();
+    void expandPockets();
     Rng cellRng(int i, std::uint64_t salt) const;
     // chunk table over the grid's area: pixel access and waking without hash lookups
     void buildChunkTable();
