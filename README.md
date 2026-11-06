@@ -70,7 +70,7 @@ build\notita_tests.exe            :: unit tests (optional name filter as arg)
 build\notita_bench.exe [ticks] [threads...]
 ```
 
-Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`
+Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`, `--electric-view current|potential`
 (run N frames, save the sim view, quit: handy for smoke tests),
 `--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`,
 `--light-cpu` (light pass on the CPU reference), `--no-light`.

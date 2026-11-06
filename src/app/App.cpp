@@ -99,6 +99,8 @@ bool App::init() {
     brush_.radius = 6;
     loadScene(opts_.scene);
     showTemp_ = opts_.tempView;
+    showElectric_ = opts_.electricView >= 0;
+    electricView_ = std::max(0, opts_.electricView);
 
     // ---- window + GPU ----
     if (!SDL_Init(SDL_INIT_VIDEO)) {

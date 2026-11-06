@@ -35,6 +35,7 @@ struct AppOptions {
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
+    int  electricView = -1;     // start in the electricity overlay: 0 current, 1 potential
     bool gasCpu = false;        // run the gas grid on the CPU solver even when the GPU one works
     int  gasView = 0;           // 0 gas, 1 velocity, 2 pressure (F6 cycles)
     bool gasSelfTest = false;   // compare the GPU and CPU gas solvers, print the result, exit
