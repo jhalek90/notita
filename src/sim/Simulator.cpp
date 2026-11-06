@@ -705,6 +705,7 @@ private:
         // burnt out
         ++events_;
         c.material = (p.residue != kEmpty && rng_.chance16(p.residue16)) ? p.residue : p.burnsInto;
+        c.shade = mats_[c.material].shadeAt(x, y); // #481: the residue takes its own texture
         c.flags = 0;
         c.life = 0;
         c.stamp = stamp_;
@@ -758,6 +759,7 @@ private:
         const float t = std::clamp(amb + e / (tp[r.outA].cap + tp[r.outB].cap), kMinTemp, kMaxTemp);
         auto become = [&](Cell* cell, MaterialId m, int x, int y) {
             cell->material = m;
+            cell->shade = mats_[m].shadeAt(x, y); // #481: products take their own texture
             cell->temperature = t;
             cell->flags = 0;
             cell->life = 0;
@@ -790,6 +792,7 @@ private:
         const float sensible = (c.temperature - point) * tp[c.material].cap;
         c.temperature = std::clamp(point + (sensible + latent) * tp[into].invCap, kMinTemp, kMaxTemp);
         c.material = into;
+        c.shade = mats_[into].shadeAt(x, y); // #481: e.g. melt that sets into stone gets stone's texture
         c.flags = 0;
         c.life = 0;
         c.stamp = stamp_;

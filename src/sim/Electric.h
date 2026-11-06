@@ -176,7 +176,10 @@ private:
     void flood();
     void solve(int comp, bool parallel);
     void coarseCorrect(int comp);
-    void split(Cell& a, Cell& b, const ElectricProps& p);
+    // turns a grid cell into another material (lamp/switch toggles, electrolysis);
+    // it takes the new material's texture at its spot (#481)
+    void become(Cell& c, int gx, int gy, MaterialId into) const;
+    void split(Cell& a, int ax, int ay, Cell& b, int bx, int by, const ElectricProps& p);
     void effects();
     void runStrike(const Strike& s);
     void heatCell(int gx, int gy, Cell& c, float energy);

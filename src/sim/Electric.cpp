@@ -727,7 +727,7 @@ void ElectricSystem::effects() {
                 Cell& lc = *gridCell(ax, ay);
                 const bool isLit = props_[lc.material].role == ElectricRole::LampLit;
                 if (isLit != lit) {
-                    lc.material = props_[lc.material].toggle;
+                    become(lc, ax, ay, props_[lc.material].toggle);
                     wakeAt(ax, ay, true);
                     ++stats_.toggled;
                 }
@@ -758,7 +758,7 @@ void ElectricSystem::effects() {
                     const int d = (d0 + k) & 3;
                     Cell* t = gridCell(x + kDx[d], y + kDy[d]);
                     if (!t || t->material != c.material || (t->flags & kFlagBody)) continue;
-                    split(c, *t, p);
+                    split(c, x, y, *t, x + kDx[d], y + kDy[d], p);
                     wakeAt(x, y, true);
                     wakeAt(x + kDx[d], y + kDy[d], true);
                     ++stats_.splits;
@@ -779,23 +779,27 @@ void ElectricSystem::effects() {
             Cell& c = ck->cells[li];
             const ElectricProps& p = props_[c.material];
             if (p.role != ElectricRole::LampLit || p.toggle == kEmpty) continue;
-            c.material = p.toggle;
+            become(c, x, y, p.toggle);
             wakeAt(x, y, true);
             ++stats_.toggled;
         }
     }
 }
 
-void ElectricSystem::split(Cell& a, Cell& b, const ElectricProps& p) {
-    auto become = [](Cell& cell, MaterialId into) {
-        cell.material = into;
-        cell.flags = 0;
-        cell.life = 0;
-        cell.aux = 0;
-        cell.vx = cell.vy = 0;
-    };
-    become(a, p.splitA);
-    become(b, p.splitB);
+void ElectricSystem::become(Cell& c, int gx, int gy, MaterialId into) const {
+    c.material = into;
+    c.shade = mats_[into].shadeAt(gx0_ + gx, gy0_ + gy);
+}
+
+void ElectricSystem::split(Cell& a, int ax, int ay, Cell& b, int bx, int by, const ElectricProps& p) {
+    for (Cell* cell : {&a, &b}) {
+        cell->flags = 0;
+        cell->life = 0;
+        cell->aux = 0;
+        cell->vx = cell->vy = 0;
+    }
+    become(a, ax, ay, p.splitA);
+    become(b, bx, by, p.splitB);
 }
 
 void ElectricSystem::runStrike(const Strike& s) {
@@ -860,8 +864,7 @@ void ElectricSystem::runStrike(const Strike& s) {
             for (int d = 0; d < 4; ++d) {
                 Cell* t = gridCell(x + kDx[d], y + kDy[d]);
                 if (!t || t->material != c.material || (t->flags & kFlagBody)) continue;
-                c.material = p.splitA; c.flags = 0; c.life = 0; c.aux = 0; c.vx = c.vy = 0;
-                t->material = p.splitB; t->flags = 0; t->life = 0; t->aux = 0; t->vx = t->vy = 0;
+                split(c, x, y, *t, x + kDx[d], y + kDy[d], p);
                 wakeAt(x, y, true);
                 wakeAt(x + kDx[d], y + kDy[d], true);
                 ++stats_.splits;
@@ -908,7 +911,7 @@ int ElectricSystem::toggleSwitch(int x, int y, int radius) {
     for (std::int32_t px : q) {
         const int qx = px % gw_, qy = px / gw_;
         Cell& c = *gridCell(qx, qy);
-        c.material = props_[c.material].toggle;
+        become(c, qx, qy, props_[c.material].toggle);
         wakeAt(qx, qy, true);
     }
     return static_cast<int>(q.size());

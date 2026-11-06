@@ -4,7 +4,11 @@
 
 #include "sim/ChunkCodec.h"
 #include "sim/Material.h"
+#include "sim/Scenes.h"
+#include "sim/Simulator.h"
 #include "sim/Texture.h"
+#include "sim/ThreadPool.h"
+#include "sim/World.h"
 #include "sim/WorldGen.h"
 
 #include <array>
@@ -252,4 +256,90 @@ TEST_CASE(texture_game_data_is_valid) {
         const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 65536.0;
         std::printf("  %-9s %5.0f ns per pixel (%u)\n", n, ns, sum & 1);
     }
+}
+
+TEST_CASE(texture_state_change_products_take_their_texture) {
+    // a liquid that sets into textured rock, and wood that burns down to textured char;
+    // both products are solids, so they stay where they were made
+    MaterialRegistry mats;
+    std::vector<std::string> errors;
+    mats.loadFromString(R"(
+[wall]
+kind = solid
+density = 3000
+color = #404040
+[melt]
+kind = liquid
+density = 2500
+spread = 4
+freeze_point = 0
+freezes_into = rock
+color = #c05020
+[rock]
+kind = solid
+density = 2500
+melt_point = 900
+melts_into = melt
+color = #707070
+color_variation = 12
+palette = #505050, #707070*2, #909090
+texture = strata
+[wood]
+kind = solid
+density = 600
+ignite_point = 300
+burn_time = 20
+burns_into = smoke
+burn_residue = char
+residue_chance = 1
+color = #7b5232
+[char]
+kind = solid
+density = 600
+color = #302820
+color_variation = 14
+palette = #201810*2, #302820*3, #4a4038
+flecks = 0.05, 2
+[smoke]
+kind = gas
+density = 0.9
+spread = 2
+color = #404040
+[flame]
+kind = special
+density = 0.3
+spawn_temp = 950
+life_min = 10
+life_max = 20
+color = #ff9a2a
+)", &errors);
+    for (auto& e : errors) std::printf("  materials: %s\n", e.c_str());
+    CHECK(errors.empty());
+    const MaterialId rock = mats.idOf("rock"), chr = mats.idOf("char");
+    World world(0, 0, 1, 1);
+    ThreadPool pool(2);
+    Simulator sim(world, mats, &pool, 5);
+    sim.params().ambientRate = 0.0f;
+    Rng rng(3);
+    // a cold box of melt (random shades, as a brush or an old save would leave them)
+    scenes::fillRect(world, mats.idOf("wall"), 4, 50, 30, 50, rng);
+    scenes::fillRect(world, mats.idOf("wall"), 4, 30, 4, 49, rng);
+    scenes::fillRect(world, mats.idOf("wall"), 30, 30, 30, 49, rng);
+    scenes::fillRect(world, mats.idOf("melt"), 5, 40, 29, 49, rng, -30.0f);
+    // a hot wood beam on a wall with air above it
+    scenes::fillRect(world, mats.idOf("wall"), 36, 50, 60, 50, rng);
+    scenes::fillRect(world, mats.idOf("wood"), 36, 48, 60, 49, rng, 400.0f);
+    for (int t = 0; t < 400; ++t) sim.tick();
+    std::size_t rocks = 0, chars = 0, rockMatch = 0, charMatch = 0;
+    for (int y = 0; y < kChunkSize; ++y)
+        for (int x = 0; x < kChunkSize; ++x) {
+            const Cell& c = *world.cell(x, y);
+            if (c.material == rock) { ++rocks; rockMatch += c.shade == mats[rock].shadeAt(x, y); }
+            if (c.material == chr) { ++chars; charMatch += c.shade == mats[chr].shadeAt(x, y); }
+        }
+    CHECK_EQ(rocks, std::size_t{25 * 10});
+    CHECK_EQ(rockMatch, rocks);
+    CHECK(chars > 0);
+    CHECK_EQ(world.count(mats.idOf("wood")), std::size_t{0});
+    CHECK_EQ(charMatch, chars);
 }
