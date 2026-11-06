@@ -114,7 +114,7 @@ Biome WorldGen::biome(int x) const { return column(x).biome; }
 int WorldGen::waterTableY(int x) const { return column(x).water; }
 
 Cell WorldGen::make(MaterialId m, int x, int y) const {
-    Cell c = mats_[m].spawn(terrainShade(x, y));
+    Cell c = mats_[m].spawn(mats_[m].shadeAt(x, y));
     if (mats_[m].kind == MaterialKind::Solid) c.aux = kAuxPinned;
     return c;
 }

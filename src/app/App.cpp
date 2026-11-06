@@ -33,7 +33,7 @@ ImU32 toImColor(std::uint32_t rgba) { return rgba | 0xFF000000u; } // ImU32 is a
 
 } // namespace
 
-App::App(AppOptions opts) : opts_(std::move(opts)) {}
+App::App(AppOptions opts) : opts_(std::move(opts)) { relief_ = !opts_.noRelief; }
 
 App::~App() {
     if (device_) SDL_WaitForGPUIdle(device_);
@@ -194,6 +194,7 @@ bool App::init() {
 }
 
 void App::rebuildDisplayPalette() {
+    rebuildSurfaceKinds();
     displayPalette_.resize(mats_.size());
     const std::uint32_t air = mats_[kEmpty].color | 0xFF000000u;
     for (std::size_t i = 0; i < mats_.size(); ++i) {
@@ -577,6 +578,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_F5) showTemp_ = !showTemp_;
         else if (k == SDLK_F10) setNewLookAndMotion(!(newLook_ && smoothPowder_ && calmLiquid_));
         else if (k == SDLK_F11) setNewFlames(!newFlames_);
+        else if (k == SDLK_F12) relief_ = !relief_;
         else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
         else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
         else if (k == SDLK_V) loadScene("gas");
@@ -828,6 +830,7 @@ void App::drawWorld() {
                 }
             }
         }
+    applyRelief();
     shadeLiquids();
     drawParticles();
     drawGas();
@@ -1151,6 +1154,7 @@ void App::drawUi() {
     drawLightUi();
     drawLiquidUi();
     drawFlameUi();
+    drawTextureUi();
     drawPhase4Ui();
     drawPlayerUi();
     drawWorldUi();

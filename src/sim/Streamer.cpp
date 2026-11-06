@@ -145,7 +145,7 @@ StoredChunk& Streamer::storeEntry(int cx, int cy) {
     scratch.coord = {cx, cy};
     gen_.generate(scratch);
     StoredChunk sc;
-    sc.cells = encodeCells(scratch);
+    sc.cells = encodeCells(scratch, &mats_);
     sc.mass = cellsMass(scratch, mats_);
     sc.next = {0, 0, kChunkMask, kChunkMask}; // fresh terrain settles when it wakes
     sc.heatNext = true;
@@ -198,7 +198,7 @@ bool Streamer::follow(float x, float y) {
 
 StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas) {
     StoredChunk sc;
-    sc.cells = encodeCells(c);
+    sc.cells = encodeCells(c, &mats_);
     sc.mass = cellsMass(c, mats_);
     if (gas_) {
         GasGrid::ChunkCells g;
@@ -253,7 +253,7 @@ void Streamer::wakeChunk(int cx, int cy, bool decoded) {
         ++stats_.generated;
     } else {
         StoredChunk& sc = it->second;
-        if (!decoded) decodeCells(sc.cells, *c);
+        if (!decoded) decodeCells(sc.cells, *c, nullptr, &mats_);
         if (!sc.next.empty()) c->nextRect.include(sc.next.x0, sc.next.y0, sc.next.x1, sc.next.y1);
         c->heatNext.store(sc.heatNext, std::memory_order_relaxed);
         if (gas_ && !sc.gas.empty()) {
@@ -286,7 +286,7 @@ void Streamer::shiftTo(int cx0, int cy0) {
         std::vector<StoredChunk> enc(leaving.size());
         parallel(static_cast<int>(leaving.size()), [&](int i) {
             const Chunk& c = *world_.chunk(leaving[i].x, leaving[i].y);
-            enc[i].cells = encodeCells(c);
+            enc[i].cells = encodeCells(c, &mats_);
             enc[i].mass = cellsMass(c, mats_);
             enc[i].next = c.nextRect.peek();
             enc[i].heatNext = c.heatNext.load(std::memory_order_relaxed);
@@ -308,7 +308,7 @@ void Streamer::shiftTo(int cx0, int cy0) {
         parallel(static_cast<int>(fresh.size()), [&](int i) {
             auto it = store_.find(chunkKey(fresh[i].x, fresh[i].y));
             if (it == store_.end()) gen_.generate(*made[i]);
-            else decodeCells(it->second.cells, *made[i]);
+            else decodeCells(it->second.cells, *made[i], nullptr, &mats_);
         });
         for (const ChunkCoord& c : fresh) wakeChunk(c.x, c.y, true);
     }
@@ -515,8 +515,8 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         const std::vector<std::uint8_t> gas = r.blob();
         if (!r.ok()) return fail("truncated chunk");
         scratch.coord = {cx, cy};
-        if (!decodeCells(cells, scratch, &remap)) return fail("corrupt chunk cells");
-        sc.cells = encodeCells(scratch);
+        if (!decodeCells(cells, scratch, &remap, &mats_)) return fail("corrupt chunk cells");
+        sc.cells = encodeCells(scratch, &mats_);
         sc.mass = cellsMass(scratch, mats_);
         if (!gas.empty() && curSpecies > 0) {
             GasGrid::ChunkCells g;

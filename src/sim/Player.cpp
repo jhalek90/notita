@@ -522,7 +522,7 @@ void Player::place(const PlayerInput& in, float tx, float ty) {
         const Cell* c = world_.cell(p.x, p.y);
         if (!c || c->material != kEmpty || covers(p.x, p.y)) continue;
         if (!inv_.take(m)) break;
-        Cell cell = mats_[m].spawn(static_cast<std::uint8_t>(g.below(256)));
+        Cell cell = mats_[m].spawn(mats_[m].shadeAt(p.x, p.y));
         if (k == MaterialKind::Solid && in.placePinned) cell.aux = kAuxPinned;
         world_.setCell(p.x, p.y, cell);
         ++n;
@@ -640,9 +640,8 @@ void Player::raft(const PlayerInput& in, float tx, float ty) {
             if (!inside && mats_[c->material].kind == MaterialKind::Solid) return;
         }
     if (!inv_.take(m, static_cast<long long>(W) * H)) return;
-    Rng g = rng(3);
     for (int y = y0; y < y0 + H; ++y)
-        for (int x = x0; x < x0 + W; ++x) world_.setCell(x, y, mats_[m].spawn(static_cast<std::uint8_t>(g.below(256))));
+        for (int x = x0; x < x0 + W; ++x) world_.setCell(x, y, mats_[m].spawn(mats_[m].shadeAt(x, y)));
     stats_.placed += W * H;
     if (bodies_) bodies_->releaseClump(x0 + W / 2, y0 + H / 2);
 }

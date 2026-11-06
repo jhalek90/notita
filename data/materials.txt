@@ -64,6 +64,23 @@
 #   look_foam       foam / spray colour + strength (#rrggbbaa)
 #   look_wobble     surface wave height in pixels (default 0.35); look_shimmer: interior
 #                   refraction in pixels (0.25); look_glint: moving highlight strength (0.6)
+# Textures (#481, all optional; a pixel's look is picked when it is made or placed
+# and sticks to it while it moves):
+#   palette         colours to pick from, dark to light, each with an optional weight:
+#                   "palette = #5c3f28*4, #6a4a2f*4, #2e2016*0.02" (1..16 colours)
+#   texture         clumps | speckle | strata | grain | brushed (default clumps; with no
+#                   palette the single colour is used and only the brightness is textured)
+#   tex_scale       feature size in pixels (6); tex_stretch: how much longer along the
+#                   beam / band than across (6); tex_warp: band and vein waviness in px (0)
+#   tex_mix         per-pixel randomness of the colour pick (0..1, 0.25); tex_contrast (1.6)
+#   tex_shade       brightness from the noise (0..1, 0.6); tex_jitter: per pixel (0..1, 0.35)
+#                   (brightness spans +- color_variation)
+#   flecks, specks  "chance, colour": single pixels of palette colour (0-based index)
+#   pebbles         "chance, radius, colour": small shaded stones
+#   pores           chance of a dark pit pixel
+#   panels          "width, height, amount": brightness shift per block (cast panels, bricks)
+#   veins           "scale, width in px, colour": thin wandering lines (stone)
+#   knots, rings    wood: "chance, radius, colour" knots; growth rings per pixel across the grain
 # Unknown keys are kept for later phases.
 
 [bedrock]
@@ -74,6 +91,10 @@ conductivity = 0.05
 heat_capacity = 2.0
 color = #2e2a33
 color_variation = 6
+palette = #221f27*3, #2e2a33*4, #38333f*2, #4a4552*0.03
+texture = clumps
+tex_scale = 9
+veins = 40, 1.0, 3
 
 [slate]
 kind = solid
@@ -82,6 +103,13 @@ conductivity = 0.2
 heat_capacity = 1.0
 color = #6b6f78
 color_variation = 14
+palette = #565a63*2, #6b6f78*4, #757982*3, #82858c*1, #a4a39d*0.03
+texture = strata
+tex_scale = 6
+tex_stretch = 8
+tex_warp = 12
+tex_mix = 0.15
+veins = 70, 1.1, 4
 noise = 0.04
 
 [sand]
@@ -94,6 +122,10 @@ melt_point = 1150
 melts_into = molten_glass
 color = #d8b86a
 color_variation = 18
+palette = #b8964f*2, #ccab60*4, #d8b86a*4, #e3c78a*3, #9a8466*1, #f1e3bf*1
+texture = speckle
+tex_scale = 5
+tex_jitter = 0.4
 noise = 0.06
 
 [cinder_grit]
@@ -104,6 +136,9 @@ conductivity = 0.12
 heat_capacity = 0.9
 color = #7a5a4c
 color_variation = 22
+palette = #5e4438*2, #7a5a4c*4, #8a6a58*3, #3e3230*2, #a08470*1
+texture = speckle
+tex_scale = 4
 noise = 0.08
 
 [water]
@@ -272,6 +307,13 @@ melt_point = 950
 melts_into = magma
 color = #3b3533
 color_variation = 12
+palette = #2c2725*3, #3b3533*4, #48413d*2, #5c544c*0.03
+texture = strata
+tex_scale = 9
+tex_stretch = 5
+tex_warp = 6
+pores = 0.035
+specks = 0.015, 3
 noise = 0.05
 
 # showcase building (--scene showcase): cast concrete, furnace brick, sign lights
@@ -284,6 +326,17 @@ conductivity = 0.15
 heat_capacity = 1.1
 color = #8f8d87
 color_variation = 16
+palette = #7e7c76*3, #8f8d87*5, #9b9992*3, #5f5d58*0.03, #b4b0a6*0.03
+texture = clumps
+tex_scale = 16
+tex_contrast = 1.0
+tex_mix = 0.2
+tex_shade = 0.35
+tex_jitter = 0.22
+specks = 0.04, 4
+flecks = 0.035, 3
+pores = 0.02
+panels = 48, 32, 0.14
 noise = 0.03
 
 [firebrick]
@@ -295,6 +348,12 @@ conductivity = 0.05
 heat_capacity = 1.3
 color = #8e4430
 color_variation = 18
+palette = #6e3424*2, #833e2b*4, #8e4430*4, #9c5038*2, #b0745a*0.03
+texture = clumps
+tex_scale = 3
+tex_mix = 0.3
+specks = 0.03, 4
+panels = 10, 4, 0.35
 noise = 0.06
 
 [sign_light]
@@ -362,6 +421,15 @@ burn_residue = ash
 residue_chance = 0.35
 color = #7b5232
 color_variation = 18
+palette = #5a3a22*2, #6c4729*4, #7b5232*4, #8b6040*2, #3a2414*0.02
+texture = grain
+tex_scale = 3
+tex_stretch = 10
+tex_mix = 0.1
+tex_shade = 0.5
+tex_jitter = 0.15
+rings = 0.32
+knots = 0.14, 3, 4
 noise = 0.05
 
 [ash]
@@ -372,6 +440,9 @@ conductivity = 0.05
 heat_capacity = 0.6
 color = #8c8780
 color_variation = 16
+palette = #5c5853*2, #807b74*4, #8c8780*4, #a39e96*3, #3e3b38*1, #c9c5bd*1
+texture = speckle
+tex_scale = 3
 noise = 0.05
 
 [smoke]
@@ -458,6 +529,11 @@ conductivity = 0.85
 heat_capacity = 0.5
 color = #8a8f96
 color_variation = 10
+texture = brushed
+tex_scale = 2
+tex_stretch = 18
+tex_shade = 0.8
+tex_jitter = 0.12
 electric = 0.6
 melt_point = 1500
 melts_into = molten_iron
@@ -526,6 +602,13 @@ conductivity = 0.1
 heat_capacity = 1.1
 color = #6a4a2f
 color_variation = 16
+palette = #46301f*2, #583c26*4, #6a4a2f*4, #7a5838*2, #2b1d13*0.02, #857d70*0.02
+texture = clumps
+tex_scale = 5
+tex_mix = 0.3
+tex_shade = 0.5
+flecks = 0.07, 4
+pebbles = 0.12, 2, 5
 
 [turf]
 label = Turf
@@ -536,6 +619,11 @@ conductivity = 0.08
 heat_capacity = 1.1
 color = #4f7d34
 color_variation = 20
+palette = #3a6326*2, #4f7d34*4, #5d8c3a*3, #6f9a40*1, #7e8a3a*1, #2a4a1c*0.03
+texture = clumps
+tex_scale = 3
+tex_mix = 0.45
+flecks = 0.05, 5
 
 # ---- electricity ----
 [copper]
@@ -551,6 +639,11 @@ melts_into = molten_copper
 latent_heat = 4
 color = #c8783e
 color_variation = 10
+texture = brushed
+tex_scale = 2
+tex_stretch = 18
+tex_shade = 0.8
+tex_jitter = 0.12
 
 [molten_copper]
 label = Molten copper

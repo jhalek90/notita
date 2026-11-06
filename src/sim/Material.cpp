@@ -76,16 +76,17 @@ bool parseKind(std::string_view v, MaterialKind& k) {
     return true;
 }
 
-// Strip a comment. '#' also starts colour values, so a '#' only starts a
-// comment at the beginning of a line or after whitespace once a value exists.
+// Strip a comment. '#' also starts colour values, so a '#' right after the '='
+// or after a comma in a list is part of the value; anywhere else it starts a comment.
 std::string_view stripComment(std::string_view line) {
     for (std::size_t i = 0; i < line.size(); ++i) {
         const char c = line[i];
         if (c == ';') return line.substr(0, i);
         if (c == '#') {
             const auto eq = line.find('=');
-            const bool startsValue = eq != std::string_view::npos && i > eq &&
-                                     trim(line.substr(eq + 1, i - eq - 1)).empty();
+            const std::string_view before = eq != std::string_view::npos && i > eq ? trim(line.substr(eq + 1, i - eq - 1)) : std::string_view{};
+            // the value's first colour, or the next one in a list ("palette = #aaa, #bbb")
+            const bool startsValue = eq != std::string_view::npos && i > eq && (before.empty() || before.back() == ',');
             if (!startsValue) return line.substr(0, i);
         }
     }
@@ -430,6 +431,10 @@ MaterialId MaterialRegistry::idOf(std::string_view name) const {
 }
 
 void MaterialRegistry::buildPalette(Material& m) {
+    if (m.texture.enabled) {
+        buildTexturePalette(m.texture, m.colorVariation, m.palette);
+        return;
+    }
     const int r = m.color & 0xFF, g = (m.color >> 8) & 0xFF, b = (m.color >> 16) & 0xFF;
     const std::uint32_t a = m.color & 0xFF000000u;
     for (int s = 0; s < 256; ++s) {
@@ -485,14 +490,19 @@ bool MaterialRegistry::loadFromString(std::string_view text, std::vector<std::st
             std::replace(cur.label.begin(), cur.label.end(), '_', ' ');
             cur.label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(cur.label[0])));
         }
-        buildPalette(cur);
+        {
+            std::string err;
+            if (!parseTexture(cur.extra, cur.color, cur.texture, &err)) fail(sectionLine, "material '" + cur.name + "': " + err);
+        }
         auto it = byName_.find(cur.name);
         if (it != byName_.end()) {
             cur.id = it->second;
+            buildPalette(cur);
             materials_[cur.id] = cur;
         } else {
             cur.id = static_cast<MaterialId>(materials_.size());
             byName_[cur.name] = cur.id;
+            buildPalette(cur);
             materials_.push_back(cur);
         }
     };
