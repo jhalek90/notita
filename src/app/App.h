@@ -8,6 +8,7 @@
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Particles.h"
+#include "sim/Player.h"
 #include "sim/Reactions.h"
 #include "sim/Simulator.h"
 #include "sim/ThreadPool.h"
@@ -25,13 +26,14 @@ namespace notita {
 struct AppOptions {
     int  frames = 0;            // > 0: quit after this many frames (smoke runs)
     std::string screenshot;     // with frames: write the last view to this .bmp
-    std::string scene = "demo"; // demo | forge | churn | thermal | gas | quarry | empty
+    std::string scene = "demo"; // demo | forge | churn | thermal | gas | quarry | play | empty
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
     bool gasCpu = false;        // run the gas grid on the CPU solver even when the GPU one works
     int  gasView = 0;           // 0 gas, 1 velocity, 2 pressure (F6 cycles)
     bool gasSelfTest = false;   // compare the GPU and CPU gas solvers, print the result, exit
+    bool autoplay = false;      // drive the player through a fixed demo (walk, jet, blast, grapple) for smoke runs
 };
 
 class App {
@@ -55,6 +57,13 @@ private:
     void drawPhase4Ui();
     void drawGas();       // gas over the pixels, or the velocity / pressure view
     void drawGasUi();
+    // phase 5: the player
+    void spawnPlayer(float x, float y, bool kit);
+    void removePlayer();
+    void updatePlayerInput(const bool* keys);
+    void drawPlayer();
+    void drawPlayerUi();
+    void blast(int x, int y);
     void loadScene(const std::string& name);
     void drawWorld();
     void drawUi();
@@ -82,6 +91,18 @@ private:
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<BodySystem> bodies_;
     bool particlesOn_ = true;
+    std::unique_ptr<Player> player_;
+    bool playerOn_ = false;     // a player is in the world and takes the keys
+    PlayerInput playerIn_;
+    bool usePressed_ = false;   // LMB went down since the last tick
+    bool creative_ = false;
+    bool placePinned_ = true;
+    bool slowMo_ = false;
+    float savedSpeed_ = 1.0f;
+    MaterialId playerMat_ = kEmpty;
+    float playerHurt_ = 0.0f;   // recent damage, for the red flash
+    int autoFrame_ = 0;
+    void autoplay();
     std::unique_ptr<GpuGasSolver> gpuGas_; // null when the GPU path is unavailable
     std::string gpuGasError_;
     bool useGpuGas_ = true;

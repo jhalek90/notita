@@ -35,6 +35,7 @@ App::App(AppOptions opts) : opts_(std::move(opts)) {}
 
 App::~App() {
     if (device_) SDL_WaitForGPUIdle(device_);
+    gpuGas_.reset(); // its GPU buffers must go before the device does (it was released after ~App, on a dead device)
     if (imguiReady_) {
         ImGui_ImplSDL3_Shutdown();
         ImGui_ImplSDLGPU3_Shutdown();
@@ -72,6 +73,9 @@ bool App::init() {
     particles_->setGas(gas_.get());
     gas_->setParticles(particles_.get());
     bodies_->setGas(gas_.get());
+    player_ = std::make_unique<Player>(*world_, mats_, opts_.seed);
+    player_->setGas(gas_.get());
+    player_->setBodies(bodies_.get());
     gasView_ = opts_.gasView;
     for (int k = 0; k < gas_->speciesCount(); ++k) gasColor_.push_back(mats_[gas_->species(k)].color);
     brush_.material = mats_.idOf("sand");
@@ -215,7 +219,11 @@ void App::buildHeatPalettes() {
 void App::loadScene(const std::string& name) {
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
-    if (name == "churn") scenes::churn(*world_, mats_, opts_.seed);
+    removePlayer(); // only the play scene has a player (F7 spawns one anywhere)
+    float psx = 0, psy = 0;
+    const bool play = name == "play" || name == "playground";
+    if (play) scenes::playground(*world_, mats_, opts_.seed, &psx, &psy);
+    else if (name == "churn") scenes::churn(*world_, mats_, opts_.seed);
     else if (name == "quarry") scenes::quarry(*world_, mats_, opts_.seed);
     else if (name == "forge") scenes::forge(*world_, mats_, opts_.seed);
     else if (name == "thermal") scenes::thermalChurn(*world_, mats_, opts_.seed);
@@ -225,6 +233,72 @@ void App::loadScene(const std::string& name) {
     if (gas_) gas_->clear();
     camX_ = static_cast<float>(world_->minX() + (world_->widthPx() - kViewW) / 2);
     camY_ = static_cast<float>(world_->minY() + world_->heightPx() - kViewH);
+    if (play) spawnPlayer(psx, psy, true);
+}
+
+void App::spawnPlayer(float x, float y, bool kit) {
+    player_->spawn(x, y);
+    Inventory& inv = player_->inventory();
+    inv.creative = creative_;
+    if (kit) {
+        // a starting kit for play mode: water for the jet, timber for a raft or two, a few charges
+        inv.reset(mats_.size());
+        inv.add(mats_.idOf("water"), 240);
+        inv.add(mats_.idOf("timber"), 600);
+        inv.charges = 6;
+        playerMat_ = mats_.idOf("timber");
+    }
+    if (playerMat_ == kEmpty) playerMat_ = mats_.idOf("sand");
+    playerOn_ = true;
+    camX_ = x - kViewW * 0.5f;
+    camY_ = y - kViewH * 0.6f;
+}
+
+void App::removePlayer() { playerOn_ = false; }
+
+void App::blast(int x, int y) {
+    blastAt(gas_.get(), bodies_.get(), playerOn_ ? player_.get() : nullptr, x, y, blastRadius_, blastPower_);
+}
+
+// --autoplay: a fixed run through the play scene, by frame, with the aim
+// relative to the player (walk, jet over the hill, a blast jump, a grapple).
+void App::autoplay() {
+    const int f = autoFrame_++;
+    PlayerInput& in = playerIn_;
+    const float px = player_->x(), py = player_->centreY();
+    in.move = 0.0f;
+    in.jump = in.down = in.use = in.place = false;
+    in.aimX = px + 30.0f;
+    in.aimY = py;
+    if (f < 60) in.move = 1.0f;
+    else if (f < 130) { in.tool = Tool::Jet; in.use = true; in.move = 1.0f; in.aimX = px - 10.0f; in.aimY = py + 40.0f; }
+    else if (f < 220) in.move = 1.0f;
+    else if (f == 220) { in.tool = Tool::Blast; usePressed_ = true; in.aimX = px - 4.0f; in.aimY = player_->y() + 2.0f; }
+    else if (f < 300) in.move = 1.0f;
+    else if (f == 300) { in.tool = Tool::Grapple; usePressed_ = true; in.aimX = px + 80.0f; in.aimY = py - 140.0f; }
+    else if (f < 380) in.jump = true;
+    else in.move = 1.0f;
+}
+
+void App::updatePlayerInput(const bool* keys) {
+    PlayerInput& in = playerIn_;
+    const bool kb = !ImGui::GetIO().WantCaptureKeyboard;
+    in.move = 0.0f;
+    if (kb && (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])) in.move -= 1.0f;
+    if (kb && (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT])) in.move += 1.0f;
+    in.jump = kb && (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_SPACE]);
+    in.down = kb && (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]);
+    in.use = painting_;
+    in.place = erasing_; // RMB places in play mode
+    int wx = 0, wy = 0;
+    screenToWorld(mouseX_, mouseY_, wx, wy);
+    in.aimX = static_cast<float>(wx) + 0.5f;
+    in.aimY = static_cast<float>(wy) + 0.5f;
+    in.material = playerMat_;
+    in.brushRadius = std::clamp(brush_.radius, 0, 12);
+    in.shape = brush_.shape;
+    in.placePinned = placePinned_;
+    player_->inventory().creative = creative_;
 }
 
 bool App::screenToWorld(float sx, float sy, int& wx, int& wy) const {
@@ -251,6 +325,7 @@ void App::handleEvent(const SDL_Event& e) {
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
         if (io.WantCaptureMouse) break;
+        if (e.button.button == SDL_BUTTON_LEFT && playerOn_) usePressed_ = true;
         if (e.button.button == SDL_BUTTON_LEFT) painting_ = true;
         if (e.button.button == SDL_BUTTON_RIGHT) erasing_ = true;
         if (e.button.button == SDL_BUTTON_MIDDLE) panning_ = true;
@@ -263,11 +338,46 @@ void App::handleEvent(const SDL_Event& e) {
         break;
     case SDL_EVENT_MOUSE_WHEEL:
         if (io.WantCaptureMouse) break;
+        if (playerOn_ && !(SDL_GetModState() & SDL_KMOD_SHIFT)) {
+            // cycle the material in hand: everything in creative, what the inventory holds in play
+            const Inventory& inv = player_->inventory();
+            std::vector<MaterialId> list;
+            for (std::size_t i = 1; i < mats_.size(); ++i)
+                if (creative_ ? mats_[static_cast<MaterialId>(i)].kind != MaterialKind::Empty : inv.count(static_cast<MaterialId>(i)) > 0)
+                    list.push_back(static_cast<MaterialId>(i));
+            if (list.empty()) break;
+            auto it = std::find(list.begin(), list.end(), playerMat_);
+            int idx = it == list.end() ? 0 : static_cast<int>(it - list.begin()) + (e.wheel.y > 0 ? -1 : 1);
+            idx = (idx % static_cast<int>(list.size()) + static_cast<int>(list.size())) % static_cast<int>(list.size());
+            playerMat_ = list[static_cast<std::size_t>(idx)];
+            break;
+        }
         brush_.radius = std::clamp(brush_.radius + (e.wheel.y > 0 ? 1 : -1) * std::max(1, brush_.radius / 6), 0, 64);
         break;
     case SDL_EVENT_KEY_DOWN: {
         if (io.WantCaptureKeyboard) break;
         const SDL_Keycode k = e.key.key;
+        if (k == SDLK_F7) {
+            // spawn the player at the cursor (or take it out)
+            int sx, sy;
+            if (playerOn_) removePlayer();
+            else if (screenToWorld(mouseX_, mouseY_, sx, sy)) spawnPlayer(static_cast<float>(sx) + 0.5f, static_cast<float>(sy), false);
+            break;
+        }
+        if (k == SDLK_L) { loadScene("play"); break; }
+        if (k == SDLK_F2) { creative_ = !creative_; break; }
+        if (k == SDLK_T) {
+            slowMo_ = !slowMo_;
+            if (slowMo_) { savedSpeed_ = speed_; speed_ = 0.25f; } else speed_ = savedSpeed_;
+            break;
+        }
+        if (playerOn_) {
+            // the player has WASD / Space; pause moves to P, tools to 1-6
+            if (k == SDLK_SPACE || k == SDLK_W || k == SDLK_A || k == SDLK_S || k == SDLK_D) break;
+            if (k == SDLK_P) { paused_ = !paused_; break; }
+            if (k == SDLK_Z) { placePinned_ = !placePinned_; break; }
+            if (k >= SDLK_1 && k <= SDLK_6) { playerIn_.tool = static_cast<Tool>(k - SDLK_1); break; }
+        }
         if (k == SDLK_SPACE) paused_ = !paused_;
         else if (k == SDLK_PERIOD || k == SDLK_N) { paused_ = true; ++stepRequests_; }
         else if (k == SDLK_TAB || k == SDLK_F1) showUi_ = !showUi_;
@@ -284,10 +394,7 @@ void App::handleEvent(const SDL_Event& e) {
         }
         else if (k == SDLK_X) {
             int bx, by;
-            if (screenToWorld(mouseX_, mouseY_, bx, by)) {
-                gas_->explode(bx, by, blastRadius_, blastPower_);
-                bodies_->explode(bx, by, blastRadius_, blastPower_);
-            }
+            if (screenToWorld(mouseX_, mouseY_, bx, by)) blast(bx, by);
         }
         else if (k == SDLK_H) brush_.mode = BrushMode::Heat;
         else if (k == SDLK_J) brush_.mode = BrushMode::Cool;
@@ -311,6 +418,17 @@ void App::handleEvent(const SDL_Event& e) {
 
 void App::updateInput(float dt) {
     const bool* keys = SDL_GetKeyboardState(nullptr);
+    if (playerOn_) {
+        updatePlayerInput(keys);
+        if (opts_.autoplay) autoplay();
+        const float tx = player_->x() - kViewW * 0.5f, ty = player_->centreY() - kViewH * 0.55f;
+        const float k = std::min(1.0f, dt * 8.0f);
+        camX_ += (tx - camX_) * k;
+        camY_ += (ty - camY_) * k;
+        camX_ = std::clamp(camX_, static_cast<float>(world_->minX()), static_cast<float>(world_->minX() + std::max(0, world_->widthPx() - kViewW)));
+        camY_ = std::clamp(camY_, static_cast<float>(world_->minY()), static_cast<float>(world_->minY() + std::max(0, world_->heightPx() - kViewH)));
+        return; // no free brush painting while playing (creative mode places with RMB, F7 leaves the player)
+    }
     if (!ImGui::GetIO().WantCaptureKeyboard) {
         const float pan = 360.0f * dt * (keys[SDL_SCANCODE_LSHIFT] ? 3.0f : 1.0f);
         if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT]) camX_ -= pan;
@@ -370,6 +488,80 @@ void App::tickSim() {
     bodies_->step();
     particles_->step();
     gas_->step();
+    if (playerOn_) {
+        playerIn_.usePressed = usePressed_;
+        usePressed_ = false;
+        player_->step(playerIn_);
+        playerIn_.usePressed = false;
+        playerHurt_ = std::max(playerHurt_ * 0.9f, player_->stats().damage);
+    }
+}
+
+void App::drawPlayer() {
+    if (!playerOn_) return;
+    auto& px = renderer_.pixels();
+    const int cx0 = static_cast<int>(camX_), cy0 = static_cast<int>(camY_);
+    auto put = [&](int wx, int wy, std::uint32_t col) {
+        const int x = wx - cx0, y = wy - cy0;
+        if (x >= 0 && y >= 0 && x < kViewW && y < kViewH) px[static_cast<std::size_t>(y) * kViewW + x] = col;
+    };
+    // the rope first, so the player is drawn over it
+    if (player_->roped()) {
+        int x0 = static_cast<int>(std::floor(player_->x())), y0 = static_cast<int>(std::floor(player_->centreY()));
+        const int x1 = static_cast<int>(std::floor(player_->ropeX())), y1 = static_cast<int>(std::floor(player_->ropeY()));
+        const int dx = std::abs(x1 - x0), dy = -std::abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        for (int guard = 0; guard < 2000; ++guard) {
+            put(x0, y0, 0xFF6EAAC8u);
+            if (x0 == x1 && y0 == y1) break;
+            const int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+    const PlayerParams& pp = player_->params();
+    const int ix = static_cast<int>(std::floor(player_->x())), iy = static_cast<int>(std::floor(player_->y()));
+    if (player_->stats().jetMass > 0) {
+        // the jet's gas is real (it's in the grid, see the velocity view), but one unit a tick is a
+        // faint tint, so draw a short flickering plume at the nozzle as well
+        float dx = playerIn_.aimX - player_->x(), dy = playerIn_.aimY - player_->centreY();
+        const float d = std::max(0.5f, std::sqrt(dx * dx + dy * dy));
+        dx /= d;
+        dy /= d;
+        Rng g(Rng::hash(static_cast<std::uint64_t>(sim_->tickCount()), 77));
+        const float out = std::abs(dy) * (pp.height * 0.5f + 1.5f) + std::abs(dx) * (pp.halfWidth + 2.0f);
+        for (int k = 0; k < 14; ++k) {
+            const float t = out + g.unit() * 9.0f, side = (g.unit() - 0.5f) * (1.0f + t * 0.3f);
+            const int wx = static_cast<int>(std::floor(player_->x() + dx * t - dy * side));
+            const int wy = static_cast<int>(std::floor(player_->centreY() + dy * t + dx * side));
+            put(wx, wy, t < out + 3.0f ? 0xFF8CE6FFu : 0xFFDCE0E4u);
+        }
+    }
+    const int face = player_->facing();
+    const bool walking = std::abs(player_->vx()) > 0.2f && player_->grounded();
+    const int stride = (ix / 3) & 1;
+    const std::uint32_t hurtW = static_cast<std::uint32_t>(std::clamp(playerHurt_ * 120.0f, 0.0f, 180.0f));
+    for (int r = 0; r < pp.height; ++r) {
+        const int wy = iy - pp.height + r;
+        for (int dx = -pp.halfWidth; dx <= pp.halfWidth; ++dx) {
+            if (!player_->covers(ix + dx, wy)) continue;
+            std::uint32_t col;
+            const int fx = dx * face; // + towards where it looks
+            if (r <= 1) col = 0xFF5A5F1Eu;                                   // hood
+            else if (r <= 5) col = (fx >= -1 && fx <= 1) ? 0xFFA0C9E8u : 0xFF5A5F1Eu; // face in the hood
+            else if (r == 11) col = 0xFF3CAADCu;                             // belt
+            else if (r <= 16) col = (fx == pp.halfWidth) ? 0xFF6A7A26u : 0xFF838F2Fu; // cloak, lit edge
+            else {
+                // legs with a gap between them; while walking the lower rows step one leg at a time
+                const bool show = dx != 0 && (!walking || r < 18 || (stride ? dx < 0 : dx > 0));
+                if (!show) continue;
+                col = 0xFF1E2D46u;
+            }
+            if (r == 3 && fx == 1) col = 0xFF1E1414u; // the eye
+            if (hurtW > 0) col = mixColor(col, 0xFF2020E0u, hurtW);
+            put(ix + dx, wy, col);
+        }
+    }
 }
 
 void App::drawParticles() {
@@ -427,6 +619,7 @@ void App::drawWorld() {
         }
     drawParticles();
     drawGas();
+    drawPlayer();
 }
 
 void App::drawGas() {
@@ -507,9 +700,19 @@ void App::drawOverlays(const Viewport& vp) {
             }
         }
     }
-    // brush outline
+    // brush outline (with a player: where its tool reaches, clamped to its reach)
     int wx, wy;
-    if (screenToWorld(mouseX_, mouseY_, wx, wy) && !ImGui::GetIO().WantCaptureMouse) {
+    if (playerOn_ && screenToWorld(mouseX_, mouseY_, wx, wy)) {
+        const float pcx = player_->x(), pcy = player_->centreY();
+        float dx = static_cast<float>(wx) + 0.5f - pcx, dy = static_cast<float>(wy) + 0.5f - pcy;
+        const float d = std::sqrt(dx * dx + dy * dy), reach = player_->params().reach;
+        if (d > reach) { dx *= reach / d; dy *= reach / d; }
+        wx = static_cast<int>(std::floor(pcx + dx));
+        wy = static_cast<int>(std::floor(pcy + dy));
+        dl->AddCircle(toScreen(pcx, pcy), reach * vp.scale * inv, IM_COL32(255, 255, 255, 25), 48);
+        const float r = static_cast<float>(std::clamp(brush_.radius, 0, 12)) + 0.5f;
+        dl->AddCircle(toScreen(static_cast<float>(wx) + 0.5f, static_cast<float>(wy) + 0.5f), r * vp.scale * inv, IM_COL32(255, 230, 160, 160), 24);
+    } else if (screenToWorld(mouseX_, mouseY_, wx, wy) && !ImGui::GetIO().WantCaptureMouse) {
         const float r = static_cast<float>(brush_.radius) + 0.5f;
         const ImU32 col = IM_COL32(255, 255, 255, 140);
         const ImVec2 c = toScreen(static_cast<float>(wx) + 0.5f, static_cast<float>(wy) + 0.5f);
@@ -595,12 +798,15 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Quarry (Q)")) loadScene("quarry");
     ImGui::SameLine();
+    if (ImGui::Button("Play (L)")) loadScene("play");
+    ImGui::SameLine();
     if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
     ImGui::PopItemWidth();
     ImGui::End();
 
     drawGasUi();
     drawPhase4Ui();
+    drawPlayerUi();
 
     // debug overlay
     const ImGuiIO& io = ImGui::GetIO();
@@ -622,7 +828,10 @@ void App::drawUi() {
                 bodies_->stats().pixels, particles_->stats().stepMs + bodies_->stats().stepMs);
     ImGui::Text("tick #%llu  threads %d  seed %llu", static_cast<unsigned long long>(st.tick), pool_->threadCount(),
                 static_cast<unsigned long long>(sim_->seed()));
-    ImGui::Text("%s", paused_ ? "PAUSED" : (speed_ != 1.0f ? "speed changed" : "60 Hz fixed tick"));
+    ImGui::Text("%s", paused_ ? "PAUSED" : (slowMo_ ? "slow motion (T)" : speed_ != 1.0f ? "speed changed" : "60 Hz fixed tick"));
+    if (playerOn_)
+        ImGui::Text("player (%.1f, %.1f) v (%.2f, %.2f) %s", player_->x(), player_->y(), player_->vx(), player_->vy(),
+                    player_->grounded() ? "grounded" : "airborne");
     ImGui::Checkbox("Chunks (F3)", &showChunks_);
     ImGui::SameLine();
     ImGui::Checkbox("Dirty rects (F4)", &showDirty_);
@@ -713,6 +922,93 @@ void App::drawPhase4Ui() {
     ImGui::Text("  search %.2f ms, box2d %.2f ms, %d terrain boxes", bs.findMs, bs.solveMs, bs.terrainShapes);
     ImGui::Text("  this tick: +%d, frozen %d, shattered %d, shoved %d px", bs.created, bs.frozen, bs.shattered, bs.displaced);
     ImGui::PopItemWidth();
+    ImGui::End();
+}
+
+void App::drawPlayerUi() {
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, io.DisplaySize.y - 10), ImGuiCond_FirstUseEver, ImVec2(1, 1));
+    ImGui::Begin("Player", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    if (!playerOn_) {
+        ImGui::TextDisabled("No player. L: play scene, F7: spawn at the cursor");
+        ImGui::Checkbox("Creative (F2)", &creative_);
+        ImGui::End();
+        return;
+    }
+    const PlayerStats& ps = player_->stats();
+    const PlayerParams& pp = player_->params();
+    Inventory& inv = player_->inventory();
+    const float hp = std::max(0.0f, player_->health()) / pp.maxHealth;
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, hp > 0.5f ? ImVec4(0.3f, 0.8f, 0.4f, 1) : hp > 0.25f ? ImVec4(0.9f, 0.7f, 0.2f, 1) : ImVec4(0.9f, 0.25f, 0.2f, 1));
+    char hpText[32];
+    std::snprintf(hpText, sizeof hpText, "%.0f hp", player_->health());
+    ImGui::ProgressBar(hp, ImVec2(ImGui::GetFontSize() * 14.0f, 0), hpText);
+    ImGui::PopStyleColor();
+    ImGui::Checkbox("Creative (F2)", &creative_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Build fixed (Z)", &placePinned_);
+    ImGui::SeparatorText("Tool (1-6, LMB)");
+    for (int t = 0; t < static_cast<int>(Tool::Count); ++t) {
+        char label[48];
+        std::snprintf(label, sizeof label, "%d %s", t + 1, toolName(static_cast<Tool>(t)));
+        if (t > 0 && t != 3) ImGui::SameLine();
+        if (ImGui::RadioButton(label, playerIn_.tool == static_cast<Tool>(t))) playerIn_.tool = static_cast<Tool>(t);
+    }
+    switch (playerIn_.tool) {
+    case Tool::Dig: ImGui::TextDisabled("dig under the brush into the inventory"); break;
+    case Tool::Jet: {
+        const MaterialId g = player_->jetGas(playerMat_);
+        ImGui::TextDisabled("boils or burns the material in hand (or any that works) into gas");
+        ImGui::TextDisabled("thrust away from the cursor; %s", g ? ("in hand makes " + mats_[g].label).c_str() : "in hand doesn't work");
+        break;
+    }
+    case Tool::Grapple: ImGui::TextDisabled("click: rope to the cursor / let go; W reel in, S let out"); break;
+    case Tool::Blast: ImGui::TextDisabled("click: set off a charge (aim at your feet to jump)"); break;
+    case Tool::Raft: ImGui::TextDisabled("click: a %dx%d raft of the solid in hand (timber floats)", pp.raftW, pp.raftH); break;
+    case Tool::Freeze: ImGui::TextDisabled("hold: freeze water to walk on"); break;
+    default: break;
+    }
+    ImGui::SeparatorText("In hand (wheel, RMB places)");
+    if (playerMat_ != kEmpty) {
+        ImGui::ColorButton("##hand", ImGui::ColorConvertU32ToFloat4(toImColor(displayPalette_[playerMat_][160])), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
+        ImGui::SameLine();
+        if (creative_) ImGui::Text("%s (unlimited)", mats_[playerMat_].label.c_str());
+        else ImGui::Text("%s x %lld", mats_[playerMat_].label.c_str(), inv.count(playerMat_));
+    }
+    if (creative_) {
+        ImGui::TextDisabled("creative: every material, charges unlimited");
+    } else {
+        ImGui::Text("carrying %lld / %lld px, %d charges", inv.total(), inv.capacity, inv.charges);
+        ImGui::BeginChild("##inv", ImVec2(ImGui::GetFontSize() * 14.0f, ImGui::GetFontSize() * 7.0f));
+        for (std::size_t i = 1; i < mats_.size(); ++i) {
+            const long long n = inv.count(static_cast<MaterialId>(i));
+            if (n <= 0) continue;
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::ColorButton("##c", ImGui::ColorConvertU32ToFloat4(toImColor(displayPalette_[i][160])), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
+            ImGui::SameLine();
+            char label[96];
+            std::snprintf(label, sizeof label, "%s  %lld", mats_[static_cast<MaterialId>(i)].label.c_str(), n);
+            if (ImGui::Selectable(label, playerMat_ == i)) playerMat_ = static_cast<MaterialId>(i);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+    if (creative_) {
+        // the full palette, like the sandbox panel
+        ImGui::BeginChild("##all", ImVec2(ImGui::GetFontSize() * 14.0f, ImGui::GetFontSize() * 7.0f));
+        for (std::size_t i = 1; i < mats_.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::Selectable(mats_[static_cast<MaterialId>(i)].label.c_str(), playerMat_ == i)) playerMat_ = static_cast<MaterialId>(i);
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+    ImGui::SeparatorText("Feel");
+    ImGui::Text("%s, in liquid %.0f%%, wind (%.1f, %.1f) px/tick", player_->grounded() ? "on the ground" : "in the air", ps.submerged * 100.0f,
+                ps.windX, ps.windY);
+    ImGui::Text("hottest nearby %.0f C, jet gas %lld units, deaths %d", ps.hottest, ps.jetMassTotal, ps.deaths);
+    if (player_->roped()) ImGui::Text("rope %.0f px%s", player_->ropeLength(), player_->ropeBody() ? " (to a body)" : "");
+    ImGui::TextDisabled("A/D walk, W/Space jump & swim, S dive; P pause, T slow-mo, F7 leave");
     ImGui::End();
 }
 

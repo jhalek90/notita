@@ -1,7 +1,8 @@
 // notita sandbox entry point.
-//   notita.exe [--scene demo|forge|churn|thermal|gas|quarry|empty] [--threads N] [--seed N]
+//   notita.exe [--scene demo|forge|churn|thermal|gas|quarry|play|empty] [--threads N] [--seed N]
 //              [--frames N [--screenshot out.bmp]] [--temp-view]
 //              [--gas-cpu] [--gas-view gas|velocity|pressure] [--gas-selftest]
+//              [--autoplay]   (the play scene with the player driven through a short demo)
 #include <SDL3/SDL_main.h>
 
 #include "App.h"
@@ -21,6 +22,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--temp-view")) opts.tempView = true;
         else if (!std::strcmp(argv[i], "--gas-cpu")) opts.gasCpu = true;
         else if (!std::strcmp(argv[i], "--gas-selftest")) opts.gasSelfTest = true;
+        else if (!std::strcmp(argv[i], "--autoplay")) { opts.autoplay = true; if (opts.scene == "demo") opts.scene = "play"; }
         else if (!std::strcmp(argv[i], "--gas-view")) {
             const char* v = next();
             opts.gasView = !std::strcmp(v, "velocity") ? 1 : !std::strcmp(v, "pressure") ? 2 : 0;
