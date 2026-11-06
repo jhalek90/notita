@@ -105,6 +105,7 @@ private:
     GasExchange* gas_ = nullptr;
     std::vector<ThermalProps> thermal_;
     std::vector<PairConduct> pairs_;   // n * n
+    std::vector<std::uint16_t> reactPairs_; // n * n: reaction index + 1, or 0
     float tablesConduction_ = -1.0f;   // params_.conduction the tables were built for
     std::vector<GasEmission> emissions_;
 };
