@@ -1,6 +1,6 @@
 // notita sandbox entry point.
 //   notita.exe [--scene demo|forge|churn|thermal|gas|quarry|play|empty] [--threads N] [--seed N]
-//              [--frames N [--screenshot out.bmp]] [--temp-view]
+//              [--frames N [--screenshot out.bmp]] [--temp-view] [--electric-view current|potential]
 //              [--gas-cpu] [--gas-view gas|velocity|pressure] [--gas-selftest]
 //              [--scene world] [--load notita_world.sav]   (phase 6: the streamed world, F8 save / F9 load)
 //              [--autoplay]   (the play scene with the player driven through a short demo)
@@ -22,6 +22,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--frames")) opts.frames = std::atoi(next());
         else if (!std::strcmp(argv[i], "--screenshot")) opts.screenshot = next();
         else if (!std::strcmp(argv[i], "--temp-view")) opts.tempView = true;
+        else if (!std::strcmp(argv[i], "--electric-view")) opts.electricView = !std::strcmp(next(), "potential") ? 1 : 0;
         else if (!std::strcmp(argv[i], "--gas-cpu")) opts.gasCpu = true;
         else if (!std::strcmp(argv[i], "--gas-selftest")) opts.gasSelfTest = true;
         else if (!std::strcmp(argv[i], "--no-light")) opts.noLight = true;

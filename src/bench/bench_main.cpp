@@ -22,6 +22,12 @@
 //            the app) with everything on, the focus flying right at 3 px/tick
 //            and diving 1 px/tick, so a column of chunks sleeps and one wakes
 //            (or is generated) every ~21 ticks; then a save and a load
+//   electric: large wired areas on a 16x8-chunk window (heat + reactions on,
+//            no gas grid): a copper mesh 860x400 px with heater and lamp
+//            segments between a column of volt cells and one of ground rods,
+//            cut in half by a column of switches that flips every 120 ticks
+//            (a fresh solve each time), plus an 800x60 brine pool splitting
+//            into hydrogen and oxygen
 // Gas rows run the grid on the CPU reference solver (the GPU solver needs
 // SDL and a device; notita --gas-selftest times it). "grid ms" is the gas
 // grid step (coupling + solve) and is included in the mean.
@@ -30,6 +36,7 @@
 // Usage: notita_bench [ticks] [threads...]
 #include "script/ReactionScript.h"
 #include "sim/Bodies.h"
+#include "sim/Electric.h"
 #include "sim/Particles.h"
 #include "sim/Player.h"
 #include "sim/GasGrid.h"
@@ -297,6 +304,84 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     return r;
 }
 
+struct ElectricResult {
+    double mean = 0, p95 = 0, max = 0, elecMean = 0, elecP95 = 0, elecMax = 0, simMs = 0;
+    double nodes = 0, iterations = 0, unsettled = 0, lit = 0, floodMs = 0, solveMs = 0, effectsMs = 0;
+    long long splits = 0;
+    bool massOk = true;
+};
+
+ElectricResult runElectric(const MaterialRegistry& mats, const ReactionTable& reactions, int threads, int ticks) {
+    World world(0, 0, 16, 8);
+    ThreadPool pool(threads);
+    Simulator sim(world, mats, &pool, 2026, &reactions);
+    ElectricSystem elec(world, mats, &pool, 2026);
+    auto id = [&](const char* n) { return mats.idOf(n); };
+    auto put = [&](int x, int y, MaterialId m) { world.place(x, y, m, 128, mats[m].spawnTemp); };
+    const MaterialId copper = id("copper"), coil = id("heater_coil"), lamp = id("lamp"), cell = id("volt_cell"),
+                     ground = id("ground_rod"), sw = id("switch_closed"), brine = id("brine"), slate = id("slate");
+    for (int y = 20; y <= 420; ++y) {
+        put(36, y, cell);
+        put(905, y, ground);
+        for (int x = 40; x <= 900; ++x) {
+            const bool row = (y - 20) % 6 == 0, col = (x - 40) % 6 == 0;
+            if (!row && !col && x != 470) continue;
+            MaterialId m = copper;
+            if (row && x % 97 < 3) m = coil;
+            else if (col && y % 53 < 4) m = lamp;
+            if (x == 470) m = sw;
+            put(x, y, m);
+        }
+        for (int x = 37; x < 40; ++x) put(x, y, copper);
+        for (int x = 901; x < 905; ++x) put(x, y, copper);
+    }
+    for (int x = 96; x <= 904; ++x) put(x, 501, slate);
+    for (int y = 436; y <= 500; ++y) { put(96, y, slate); put(904, y, slate); put(97, y, cell); put(903, y, ground); }
+    for (int y = 440; y <= 500; ++y)
+        for (int x = 98; x <= 902; ++x) put(x, y, brine);
+    scenes::pinRect(world, mats, 0, 0, 1023, 511);
+    const long long mass0 = world.totalMass(mats);
+    std::vector<double> total, el;
+    ElectricResult r;
+    for (int t = 0; t < ticks; ++t) {
+        if (t > 0 && t % 120 == 0) elec.toggleSwitch(470, 20, 0);
+        const auto t0 = std::chrono::steady_clock::now();
+        sim.tick();
+        const auto t1 = std::chrono::steady_clock::now();
+        elec.step();
+        const auto t2 = std::chrono::steady_clock::now();
+        total.push_back(std::chrono::duration<double, std::milli>(t2 - t0).count());
+        el.push_back(std::chrono::duration<double, std::milli>(t2 - t1).count());
+        r.simMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const ElectricStats& es = elec.stats();
+        r.nodes += es.nodes;
+        r.floodMs += es.floodMs;
+        r.solveMs += es.solveMs;
+        r.effectsMs += es.effectsMs;
+        r.iterations += es.iterations;
+        r.unsettled += es.unsettled;
+        r.lit += es.lit;
+        r.splits = es.splitsTotal;
+        if (std::getenv("NOTITA_BENCH_ELECTRIC_TRACE") && t % 30 == 0)
+            std::printf("  t %d: %d comps, %d unsettled, %d it, residual %.4f V, imbalance %.4f\n", t, es.components, es.unsettled,
+                        es.iterations, es.residual, es.imbalance);
+    }
+    r.massOk = world.totalMass(mats) == mass0;
+    auto stats = [](std::vector<double> v, double& mean, double& p95, double& mx) {
+        double s = 0;
+        for (double x : v) s += x;
+        mean = s / static_cast<double>(v.size());
+        std::sort(v.begin(), v.end());
+        p95 = v[static_cast<std::size_t>(static_cast<double>(v.size() - 1) * 0.95)];
+        mx = v.back();
+    };
+    stats(total, r.mean, r.p95, r.max);
+    stats(el, r.elecMean, r.elecP95, r.elecMax);
+    const double n = static_cast<double>(ticks);
+    r.simMs /= n; r.nodes /= n; r.floodMs /= n; r.solveMs /= n; r.effectsMs /= n; r.iterations /= n; r.unsettled /= n; r.lit /= n;
+    return r;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -329,8 +414,9 @@ int main(int argc, char** argv) {
     const bool p4Only = std::getenv("NOTITA_BENCH_P4_ONLY") != nullptr;
     const bool playOnly = std::getenv("NOTITA_BENCH_PLAY_ONLY") != nullptr;
     const bool worldOnly = std::getenv("NOTITA_BENCH_WORLD_ONLY") != nullptr;
+    const bool electricOnly = std::getenv("NOTITA_BENCH_ELECTRIC_ONLY") != nullptr;
     for (const Row& row : rows) {
-        if (worldOnly) break;
+        if (worldOnly || electricOnly) break;
         if (gasOnly && !row.gas) continue;
         if (p4Only && !row.phase4) continue;
         if (playOnly && row.scene != Scene::Play) continue;
@@ -348,6 +434,17 @@ int main(int argc, char** argv) {
             if (row.scene == Scene::Play) std::printf("%-11s   player %.3f ms\n", "", r.playerMs);
         }
     }
+    std::printf("\n%-11s %7s %8s %8s %8s %9s %9s %9s %8s %8s %8s %8s %8s %5s\n", "electric", "threads", "mean ms", "p95 ms",
+                "max ms", "elec ms", "elec p95", "elec max", "sim ms", "live px", "CG it", "settling", "splits", "mass");
+    for (int t : threadCounts) {
+        if (worldOnly) break;
+        const ElectricResult e = runElectric(mats, reactions, t, ticks);
+        std::printf("%-11s %7d %8.3f %8.3f %8.3f %9.3f %9.3f %9.3f %8.3f %8.0f %8.1f %8.2f %8lld %5s\n", "electric", t, e.mean, e.p95,
+                    e.max, e.elecMean, e.elecP95, e.elecMax, e.simMs, e.nodes, e.iterations, e.unsettled, e.splits,
+                    e.massOk ? "exact" : "DRIFT");
+        std::printf("%-11s   of which find + flood %.3f ms, solve %.3f ms, effects %.3f ms\n", "", e.floodMs, e.solveMs, e.effectsMs);
+    }
+    if (electricOnly) return 0;
     std::printf("\n%-11s %7s %8s %8s %8s %7s %9s %9s %8s %9s %8s %9s %5s\n", "world", "threads", "mean ms", "p95 ms", "max ms",
                 "shifts", "shift ms", "shift max", "gen/wake", "store KiB", "save KiB", "save/load", "mass");
     for (int t : threadCounts) {

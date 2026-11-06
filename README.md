@@ -61,6 +61,8 @@ build\notita.exe --autoplay       :: the play scene with the player driven throu
 build\notita.exe --scene world    :: phase 6: the endless procedural world, streamed around the player
 build\notita.exe --load notita_world.sav   :: open a saved world (F8 saves, F9 loads in the world scene)
 build\notita.exe --scene world --autoplay  :: the player walks east digging (a streaming smoke run)
+build\notita.exe --scene circuits          :: electricity: lamp, heater, brine tank, thermopile, plate, fuse, lightning mast
+build\notita.exe --scene circuits --autoplay :: closes every switch and calls lightning (an electricity smoke run)
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita.exe --light-selftest :: GPU light pass vs the CPU reference, prints PASS/FAIL
@@ -68,7 +70,7 @@ build\notita_tests.exe            :: unit tests (optional name filter as arg)
 build\notita_bench.exe [ticks] [threads...]
 ```
 
-Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`
+Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`, `--electric-view current|potential`
 (run N frames, save the sim view, quit: handy for smoke tests),
 `--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`,
 `--light-cpu` (light pass on the CPU reference), `--no-light`.
@@ -99,6 +101,10 @@ Controls:
 | F2 / `T` | creative mode on/off / slow motion |
 | `O` | the streamed procedural world (World panel: window, sleeping chunks, mass, save/load) |
 | F8 / F9 | save the world to `notita_world.sav` / load it (world scene) |
+| `U` | circuits scene (Electricity panel: live pixels, power, lamps, sparks, solver, tuning) |
+| `E` | flip the switch under the cursor (with a player: the nearest one in reach) |
+| `Y` | lightning down the cursor's column |
+| `M` | electricity overlay: current, then potential, then off |
 
 With a player in the world the keys change (the Player panel lists them too):
 
@@ -133,6 +139,7 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y)
   ChunkCodec.*  phase 6 palette + RLE byte-plane encoding of chunk cells and gas cells
   Streamer.*    phase 6 awake window, chunk sleep/wake with every subsystem, save files
+  Electric.*    electricity: potential solve over conductive pixels, heating, lamps, sparks, electrolysis, lightning
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
@@ -395,6 +402,55 @@ inputs on the CPU). Without DXIL shaders it lights on the CPU at 4x4 px cells
 (~7 ms). Lighting is off in the temperature and velocity/pressure views.
 A `noise` key adds per-material hue jitter to the per-pixel shade.
 
+## Electricity
+
+Conductive pixels carry current. Every tick, after the cellular automaton,
+`ElectricSystem::step` finds the fixed potentials (volt cells at 100 V,
+ground rods at 0 V, thermopiles at 0.25 V per degree above ambient),
+flood-fills the conductive pixels connected to them and solves Kirchhoff's
+law on each connected piece (Jacobi-preconditioned conjugate gradient,
+warm-started from last tick's potentials). Conductance per pixel comes from
+the `electric` key: copper 1, iron 0.6, quickmetal 0.5, brine 0.3, etchant
+0.25, fresh water 0.02, lamps 0.02, heater coil 0.05; anything without the
+key is an insulator. A piece with only one fixed potential just sits at it
+and carries no current.
+
+What the current does, all through the sim:
+
+- Resistive heating: each pixel gets its power g * dV^2 as heat, so a short
+  circuit melts its wire (copper into molten copper, which still conducts
+  until it runs off) and a heater coil in thick copper leads glows while the
+  leads stay cool. Lamps turn most of their power into light (`electric_heat`).
+- Lamps switch to their lit material (it has an `emissive` key, so the GPU
+  lighting sees them) when the mean power over the whole lamp is high enough.
+- Sparks: a pixel carrying a lot of power next to air throws short-lived
+  spark cells (flame kind), which light timber, oil and gas like flames do.
+- Electrolysis: water and brine carrying current split, two touching cells at
+  a time, into hydrogen and oxygen (whole mass units, checked at load). Rust
+  salt dissolves into water as brine, which conducts 15 times better.
+- Switches (`E`), pressure plates (conduct while something rests on them or
+  the player stands on them), thermopiles (a generator driven by heat).
+- The player is hurt by current in the liquid around them; lightning (`Y`)
+  sends a bolt of sparks down to the first solid or liquid, heats the hit and
+  discharges through the conductors it hits, nearest first.
+
+Plain CG removes local errors quickly but a smooth, piece-wide error (a
+switch closing between a 100 V half and a 0 V half) would take thousands of
+iterations, so pieces of 256 pixels or more first get a two-level correction:
+free pixels are grouped into 8x8 px aggregates and the Galerkin coarse system
+is solved for the residual. A piece counts as settled when no pixel would
+move by more than 1% of its voltage span and the net current into its free
+pixels is within 1-2% of the current through its terminals (Kirchhoff over
+the whole piece; local corrections alone can look tiny while the field is
+far off). Effects wait until then, so a half-solved field never melts a wire.
+A piece that starts a tick already settled isn't solved again, and pixels that
+join a circuit start at their neighbours' potential, so small changes (a
+bubble moving through brine) stay cheap. Big pieces solve over fixed blocks of
+nodes with the thread pool, small ones side by side; the block split doesn't
+depend on the thread count, so results don't either. The potentials (the warm start)
+travel with their chunks through streaming sleep/wake and save files (save
+format version 2; version 1 saves still load).
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -457,6 +513,23 @@ walks back and forth, digs, jets and sets off a charge every 2 s:
 
 Most of it is the CPU gas solver (6.8 / 3.1 / 3.9 ms); the player itself is
 about 15 microseconds a tick. Phase 5 details are in the #471 note.
+
+Electricity row (`NOTITA_BENCH_ELECTRIC_ONLY=1 notita_bench 900`): a 16x8
+chunk window (like the app) with heat and reactions on, a copper mesh of
+860x400 px (lines every 6 px, heater-coil and lamp segments in it) between a
+column of volt cells and a column of ground rods, cut by a column of switches
+that flips every 120 ticks (a fresh solve over ~100k pixels each time), and an
+800x60 px brine pool splitting into hydrogen and oxygen. About 157k live
+pixels; mass stays exact.
+
+| scene | 1 thread | 4 threads | 16 threads | electric step (16 thr) |
+| --- | --- | --- | --- | --- |
+| electric | 25.8 | 11.8 | 9.6 | 8.6 ms mean, 9.9 p95, 65 max (a switch flip) |
+
+At 16 threads the step splits into find + flood 3.9 ms, solve 1.5 ms
+(0.6 CG iterations a tick on average; a switch flip costs one coarse solve and
+a few dozen iterations) and effects 2.7 ms. The circuits scene
+(7k live pixels) costs about 1 ms a tick. Details are in the #473 note.
 
 Phase 6 row: the streamed world with everything on (16x8 awake chunks like
 the app, CPU gas solver on its 256x128 grid), the focus flying east at

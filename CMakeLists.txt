@@ -37,6 +37,7 @@ add_library(notita_sim STATIC
     src/sim/ChunkCodec.cpp
     src/sim/WorldGen.cpp
     src/sim/Streamer.cpp
+    src/sim/Electric.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
 # Box2D v3 for the rigid bodies (src/sim/Bodies.*); still no SDL in the sim
@@ -72,7 +73,7 @@ endif()
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
     target_sources(notita_tests PRIVATE tests/test_light.cpp)

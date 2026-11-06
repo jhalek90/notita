@@ -7,6 +7,7 @@
 #include "light/Lighting.h"
 #include "sim/Bodies.h"
 #include "sim/Brush.h"
+#include "sim/Electric.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Particles.h"
@@ -34,6 +35,7 @@ struct AppOptions {
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
+    int  electricView = -1;     // start in the electricity overlay: 0 current, 1 potential
     bool gasCpu = false;        // run the gas grid on the CPU solver even when the GPU one works
     int  gasView = 0;           // 0 gas, 1 velocity, 2 pressure (F6 cycles)
     bool gasSelfTest = false;   // compare the GPU and CPU gas solvers, print the result, exit
@@ -80,6 +82,12 @@ private:
     bool saveWorld();
     bool loadWorld();
     void drawWorldUi();
+    void drawElectricUi();
+    void drawElectric();   // the current / potential overlay (M)
+    void toggleSwitchAt(int x, int y);
+    void autoCircuits();   // --scene circuits --autoplay: flips the switches, calls lightning (smoke runs)
+    bool circuitsScene_ = false;
+    int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();
     void drawOverlays(const Viewport& vp);
@@ -105,6 +113,9 @@ private:
     std::unique_ptr<GasGrid> gas_;
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<BodySystem> bodies_;
+    std::unique_ptr<ElectricSystem> electric_;
+    bool showElectric_ = false; // overlay: current (bright) or potential (hue)
+    int  electricView_ = 0;     // 0 current, 1 potential
     bool particlesOn_ = true;
     std::unique_ptr<Player> player_;
     std::unique_ptr<WorldGen> gen_;

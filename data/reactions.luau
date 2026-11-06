@@ -26,6 +26,10 @@ local reactions = {
 	{ a = "water", b = "magma", into = { "steam", "basalt" }, heat = -900, chance = 0.25 },
 	-- quickmetal cools molten glass straight into glass
 	{ a = "molten_glass", b = "quickmetal", into = { "glass", "quickmetal" }, heat = -300, chance = 0.02 },
+	-- rust salt dissolves into water as brine, which carries current far better
+	{ a = "water", b = "rust_salt", into = { "brine", "brine" }, heat = 0, chance = 0.01 },
+	-- hydrogen and oxygen (from electrolysis) burn together once hot
+	{ a = "hydrogen", b = "oxygen", into = { "steam", "steam" }, heat = 200, chance = 1, min_temp = 400 },
 }
 
 -- Flames are put out by water and frost. (A loop is fine: the result is just a table.)
