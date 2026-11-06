@@ -54,15 +54,7 @@ public:
                 const int lx = leftToRight ? i : r.x1 - (i - r.x0);
                 Cell& c = self_.at(lx, ly);
                 if (c.stamp == stamp_) continue;
-                if (tp[c.material].reactive && ctx_.reactions && tryReact(ox_ + lx, oy_ + ly, &c)) continue;
-                const Material& m = mats_[c.material];
-                switch (m.kind) {
-                case MaterialKind::Powder: ++processed_; updatePowder(ox_ + lx, oy_ + ly, &c, m); break;
-                case MaterialKind::Liquid: ++processed_; updateLiquid(ox_ + lx, oy_ + ly, &c, m); break;
-                case MaterialKind::Gas:    ++processed_; updateGas(ox_ + lx, oy_ + ly, &c, m); break;
-                case MaterialKind::Special: ++processed_; updateFlame(ox_ + lx, oy_ + ly, &c); break;
-                default: break;
-                }
+                updateCell(ox_ + lx, oy_ + ly, &c, tp);
             }
         }
         if (params_.heat && self_.busy()) heat();
@@ -72,6 +64,42 @@ public:
     }
 
 private:
+    void updateCell(int x, int y, Cell* c, const ThermalProps* tp) {
+        if (tp[c->material].reactive && ctx_.reactions && tryReact(x, y, c)) return;
+        const Material& m = mats_[c->material];
+        switch (m.kind) {
+        case MaterialKind::Powder: ++processed_; updatePowder(x, y, c, m); break;
+        case MaterialKind::Liquid: ++processed_; updateLiquid(x, y, c, m); break;
+        case MaterialKind::Gas:    ++processed_; updateGas(x, y, c, m); break;
+        case MaterialKind::Special: ++processed_; updateFlame(x, y, c); break;
+        default: break;
+        }
+    }
+
+    // #477 (smoothPowder): the cell under a falling cell lies in the chunk below,
+    // whose pass comes later this tick (even chunk rows run before odd ones), and
+    // is still falling itself. Treating it as a floor made everything above the
+    // border lag a tick behind, so a stream showed a gap (and liquids a stall) at
+    // every other chunk border. Update it now instead; it takes this tick's stamp,
+    // so its own chunk skips it. Only cells in the top 15 rows of the chunk below
+    // (its whole update stays within kMaxReach of this chunk), and recursion is
+    // bounded, so the threading contract and determinism hold.
+    bool advance(int x, int y) {
+        if (!params_.smoothPowder || advanceDepth_ >= 16 || (self_.coord.y & 1) != 0) return false;
+        const int ly = y - oy_;
+        if (ly < kChunkSize || ly > kChunkSize + 14) return false;
+        Cell* t = at(x, y);
+        if (!t || t->stamp == stamp_ || (t->flags & kFlagBody) || t->vy <= 0) return false;
+        const MaterialKind k = mats_[t->material].kind;
+        if (k != MaterialKind::Powder && k != MaterialKind::Liquid) return false;
+        const bool q = queued_;
+        ++advanceDepth_;
+        updateCell(x, y, t, ctx_.thermal);
+        --advanceDepth_;
+        queued_ = q;
+        return t->stamp == stamp_;
+    }
+
     // ---- neighbourhood access (own chunk + the 8 around it) ----
     Cell* at(int x, int y) {
         const int lx = x - ox_, ly = y - oy_;
@@ -161,12 +189,22 @@ private:
         // like a bell instead of collapsing. Falling grains still stream.
         const bool resting = c->vy == 0 && m.kind == MaterialKind::Powder;
 
-        bool moved = false, inLiquid = false;
+        bool moved = false, inLiquid = false, queuedLiquid = false;
         for (int s = 0; s < steps; ++s) {
             Cell* below = at(x, y + 1);
             if (!below) break;
             const Material& t = mats_[below->material];
-            if (!canDisplace(m, t, 1)) break;
+            if (!canDisplace(m, t, 1)) {
+                if (advance(x, y + 1)) { --s; continue; } // the cell below moved on first: try again
+                // queued behind a cell that is still falling: keep the speed (#477)
+                if (params_.smoothPowder && below->vy > 0 && !(below->flags & kFlagBody) &&
+                    (t.kind == MaterialKind::Liquid || t.kind == MaterialKind::Powder)) {
+                    vy = std::min(vy, std::max(static_cast<int>(below->vy), vy * 3 / 4));
+                    queuedLiquid = true;
+                    wake(x, y);
+                }
+                break;
+            }
             if (resting && s == 0 && below->stamp == stamp_) { wake(x, y); break; }
             if (t.kind == MaterialKind::Liquid || t.kind == MaterialKind::Powder) {
                 inLiquid = true;
@@ -178,7 +216,7 @@ private:
             moved = true;
         }
         // drag in liquids keeps sinking slow; otherwise keep the momentum
-        c->vy = static_cast<std::int16_t>(moved ? (inLiquid ? std::min(vy, kVelOne / 2) : vy) : 0);
+        c->vy = static_cast<std::int16_t>(moved || queuedLiquid ? (inLiquid ? std::min(vy, kVelOne / 2) : vy) : 0);
         // a liquid that fell this tick and was stopped hard splashes (phase 4)
         if (moved && !inLiquid && ctx_.particles && m.kind == MaterialKind::Liquid &&
             static_cast<float>(vy) >= params_.splashSpeed * kVelOne) {
@@ -239,6 +277,7 @@ private:
             if (!below) break;
             const Material& t = mats_[below->material];
             if (!canDisplace(m, t, 1)) {
+                if (advance(x + dx, y + 1)) { --s; continue; } // the cell below moved on first: try again
                 if (movingGrain(*below)) {
                     // queued behind a grain that is still moving: keep most of the speed
                     vy = std::min(vy, std::max(static_cast<int>(below->vy), vy * 3 / 4));
@@ -897,6 +936,7 @@ private:
     std::uint32_t processed_ = 0;
     std::uint32_t events_ = 0;
     bool queued_ = false; // fallGrain: blocked by a moving grain without moving (keeps its speed)
+    int advanceDepth_ = 0; // advance() recursion
 };
 
 static_assert(16 + 1 + 1 < kMaxReach, "max fall / spread must stay inside the checkerboard margin");

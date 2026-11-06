@@ -416,11 +416,11 @@ namespace {
 // before its front reaches the floor, the most grains seen standing still
 // (vy == 0) in mid-air. The phase 1 rule stalled the stream wherever the
 // upper chunk ran before the lower one (every other chunk border).
-int stalledWhileFalling(bool smooth) {
+int stalledWhileFalling(bool smooth, const char* material = "sand") {
     Fixture f(2, 6);
     f.sim->params().smoothPowder = smooth;
-    f.fill("sand", 60, 0, 65, 29);
-    const MaterialId sand = f.id("sand");
+    f.fill(material, 60, 0, 65, 29);
+    const MaterialId sand = f.id(material);
     int worst = 0;
     for (int t = 0; t < 400; ++t) {
         f.sim->tick();
@@ -444,6 +444,15 @@ TEST_CASE(powder_stream_never_stalls_in_mid_air) {
     const int old = stalledWhileFalling(false);
     CHECK_EQ(smooth, 0);
     CHECK(old > smooth); // the phase 1 rule shows the stall this test is about
+}
+
+TEST_CASE(liquid_stream_never_stalls_at_chunk_borders) {
+    // the same for a block of water: falling cells used to stop for a tick at every
+    // border where the upper chunk runs first; now the cell below is moved on first
+    const int smooth = stalledWhileFalling(true, "water");
+    const int old = stalledWhileFalling(false, "water");
+    CHECK_EQ(smooth, 0);
+    CHECK(old > smooth);
 }
 
 TEST_CASE(powder_stream_lands_in_a_spreading_heap) {
@@ -477,6 +486,7 @@ TEST_CASE(calm_pool_surface_stops_flickering) {
     auto moves = [](bool calm, int& active) {
         Fixture f(2, 2);
         f.sim->params().calmLiquid = calm;
+        f.sim->params().smoothPowder = calm; // "old" = all of the phase 1 rules
         f.fill("stone", 20, 60, 20, 120);
         f.fill("stone", 100, 60, 100, 120);
         f.fill("stone", 20, 121, 100, 121);

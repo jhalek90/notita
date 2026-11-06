@@ -93,6 +93,7 @@ Controls:
 | F3 / Shift+F4 | chunk grid / dirty rects overlay |
 | F4 | lighting on/off (Lighting panel: GPU/CPU, ambient, sky, gain, haze, bloom) |
 | F5 | temperature view (hot pixels also glow in the normal view) |
+| F10 | old / new look and motion: liquids as pixels and the phase 1 powder/liquid rules vs smooth liquids and smooth grains ("Look & motion" panel has each switch) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
 | `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
@@ -172,6 +173,21 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   density and push under lighter liquids; heavy liquids percolate through
   light powders. Gases rise or sink against air (density 1.2) and spread under
   ceilings. Velocity is 8.8 fixed point in the cell.
+- **Grain motion.** A grain keeps its speed from tick to tick. Blocked by a
+  grain that is itself still moving, it keeps most of its speed and waits
+  instead of stopping dead; landing on resting ground turns part of the fall
+  into sideways speed (`vx`), so it rolls down the pile and slides a little
+  at its foot; gravity has a little per-grain jitter, so a falling block
+  stretches and breaks up. (The phase 1 rule zeroed the speed whenever the
+  cell below was taken: a packed stream stalled as a whole the tick its front
+  landed, and stalled again at every other chunk border, where the upper
+  chunk runs before the lower one. That was the "steps".)
+- **Calm liquids.** On a flat surface with no drop in reach, a resting liquid
+  pixel only keeps flowing the way it was going, and starts such a run along
+  the surface at most a few times (`Cell::life`, reset when it falls or finds a
+  drop). The partial top row of a pool no longer shuffles back and forth every
+  tick; 1 px steps still level out, then the pool sleeps. `SimParams::smoothPowder`
+  and `calmLiquid` switch both back to the phase 1 rules (F10 in the app).
 
 ## Heat, state changes, fire, reactions (phase 2)
 
@@ -450,6 +466,25 @@ nodes with the thread pool, small ones side by side; the block split doesn't
 depend on the thread count, so results don't either. The potentials (the warm start)
 travel with their chunks through streaming sleep/wake and save files (save
 format version 2; version 1 saves still load).
+
+## How liquids are drawn
+
+Liquid pixels are coloured by depth (distance below the surface in their
+column) on a per-material ramp, with some of the backdrop showing through near
+the surface, then a GPU pass (`src/app/shaders/liquid.hlsl`, `GpuLiquid`) draws
+the frame at screen resolution: a quadratic B-spline over the 3x3 sim pixels
+around each screen pixel gives a smooth, metaball-like coverage that is cut at
+a threshold with a soft edge, so pools, streams and drops have round outlines
+instead of squares. Inside, the colour is the coverage-weighted mean of the
+liquid pixels' lit colours. Where the surface meets air it gets a line, a
+moving glint and a small wave; the interior shimmers a little; falling streams
+and splash particles get foam. Everything that isn't liquid stays crisp. The
+look per material lives in data/materials.txt (`look_deep`, `look_depth`,
+`look_clear`, `look_shine`, `look_foam`, `look_wobble`, `look_shimmer`,
+`look_glint`). It runs after the lighting, so liquids are lit like the rest;
+it is off in the temperature, gas and electricity views, and without the
+compiled shader (no dxc) liquids keep the smooth depth colours as pixels.
+`--old-look` / `--old-motion` start with the old drawing / rules.
 
 ## Benchmark
 

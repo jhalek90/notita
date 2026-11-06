@@ -38,6 +38,7 @@ App::~App() {
     if (device_) SDL_WaitForGPUIdle(device_);
     gpuGas_.reset(); // its GPU buffers must go before the device does (it was released after ~App, on a dead device)
     gpuLight_.reset();
+    gpuLiquid_.reset();
     if (imguiReady_) {
         ImGui_ImplSDL3_Shutdown();
         ImGui_ImplSDLGPU3_Shutdown();
@@ -154,6 +155,7 @@ bool App::init() {
         useGpuGas_ = gpuGas_ && !opts_.gasCpu;
     }
     initLighting();
+    initLiquid();
 
     // ---- Dear ImGui ----
     IMGUI_CHECKVERSION();
@@ -540,6 +542,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_F4 && (SDL_GetModState() & SDL_KMOD_SHIFT)) showDirty_ = !showDirty_;
         else if (k == SDLK_F4) lightOn_ = !lightOn_;
         else if (k == SDLK_F5) showTemp_ = !showTemp_;
+        else if (k == SDLK_F10) setNewLookAndMotion(!(newLook_ && smoothPowder_ && calmLiquid_));
         else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
         else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
         else if (k == SDLK_V) loadScene("gas");
@@ -622,6 +625,7 @@ void App::stepSim(double frameDt) {
         while (stepRequests_ > 0) { tickSim(); --stepRequests_; ++ticksThisFrame_; }
     } else {
         accumulator_ += std::min(frameDt, 0.25) * speed_;
+        if (opts_.lockstep) accumulator_ = kTickDt; // smoke runs / screenshots: frame N is tick N
         constexpr int kMaxTicksPerFrame = 4; // don't spiral if a frame was slow
         while (accumulator_ >= kTickDt && ticksThisFrame_ < kMaxTicksPerFrame) {
             tickSim();
@@ -640,6 +644,8 @@ void App::stepSim(double frameDt) {
 void App::tickSim() {
     if (opts_.autoplay && circuitsScene_) autoCircuits();
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
+    sim_->params().smoothPowder = smoothPowder_; // #477 old/new toggle (F10)
+    sim_->params().calmLiquid = calmLiquid_;
     sim_->tick();
     electric_->setPlayer(playerOn_ ? player_.get() : nullptr);
     electric_->step();
@@ -663,7 +669,10 @@ void App::drawPlayer() {
     const int cx0 = static_cast<int>(camX_), cy0 = static_cast<int>(camY_);
     auto put = [&](int wx, int wy, std::uint32_t col) {
         const int x = wx - cx0, y = wy - cy0;
-        if (x >= 0 && y >= 0 && x < kViewW && y < kViewH) px[static_cast<std::size_t>(y) * kViewW + x] = col;
+        if (x >= 0 && y >= 0 && x < kViewW && y < kViewH) {
+            px[static_cast<std::size_t>(y) * kViewW + x] = col;
+            clearLiquidInfo(x, y);
+        }
     };
     // the rope first, so the player is drawn over it
     if (player_->roped()) {
@@ -735,6 +744,7 @@ void App::drawParticles() {
         const int x = static_cast<int>(std::floor(p.x)) - cx0, y = static_cast<int>(std::floor(p.y)) - cy0;
         if (x < 0 || y < 0 || x >= kViewW || y >= kViewH) continue;
         px[static_cast<std::size_t>(y) * kViewW + x] = displayPalette_[p.cell.material][p.cell.shade];
+        markLiquidParticle(x, y, p.cell.material); // #477: spray joins the liquid surface as foam
     }
 }
 
@@ -781,6 +791,7 @@ void App::drawWorld() {
                 }
             }
         }
+    shadeLiquids();
     drawParticles();
     drawGas();
     drawPlayer();
@@ -1073,6 +1084,7 @@ void App::drawUi() {
 
     drawGasUi();
     drawLightUi();
+    drawLiquidUi();
     drawPhase4Ui();
     drawPlayerUi();
     drawWorldUi();
@@ -1381,7 +1393,8 @@ int App::run() {
 
         if (swap) {
             const bool lit = recordLight(cmd); // the GPU lighting writes the view texture itself
-            renderer_.record(cmd, swap, sw, sh, viewport_, !lit);
+            liquidDrawn_ = false;
+            if (!recordLiquid(cmd, swap, lit)) renderer_.record(cmd, swap, sw, sh, viewport_, !lit);
             ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
             SDL_GPUColorTargetInfo target{};
             target.texture = swap;
@@ -1394,8 +1407,10 @@ int App::run() {
         SDL_SubmitGPUCommandBuffer(cmd);
 
         if (opts_.frames > 0 && ++frame >= opts_.frames) {
-            if (!opts_.screenshot.empty()) lightScreenshot();
-            if (!opts_.screenshot.empty() && !writeScreenshot(opts_.screenshot))
+            // #477: with the liquid surface pass on, the shot is its full-resolution output
+            const bool hires = !opts_.screenshot.empty() && liquidScreenshot(opts_.screenshot);
+            if (!opts_.screenshot.empty() && !hires) lightScreenshot();
+            if (!opts_.screenshot.empty() && !hires && !writeScreenshot(opts_.screenshot))
                 SDL_Log("could not write %s", opts_.screenshot.c_str());
             SDL_Log("ran %d frames, last tick %.3f ms, %d/%d chunks active", frame, sim_->stats().tickMs,
                     sim_->stats().activeChunks, sim_->stats().totalChunks);

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // Presents the sim view: a CPU-filled RGBA8 buffer is uploaded to a GPU
 // texture each frame and blitted (nearest filter, integer scale when it fits)
 // onto the swapchain. Later phases add GPU passes (gas grid, heat, lighting)
@@ -32,6 +32,12 @@ public:
     // upload = false: a GPU pass (the lighting composite) already wrote the texture.
     void record(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, std::uint32_t tw, std::uint32_t th,
                 const Viewport& vp, bool upload = true);
+    // The two halves of record: upload pixels() into texture(), and blit any
+    // texture (sw x sh, e.g. the liquid pass output) into the viewport.
+    void upload(SDL_GPUCommandBuffer* cmd);
+    void blit(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* src, int sw, int sh, SDL_GPUTexture* target, const Viewport& vp);
+    // compute passes may read texture() as a read-only storage texture (#477 liquid pass)
+    bool storageReadable() const { return readable_; }
 
     // The view texture; compute shaders may write it when storageWritable().
     SDL_GPUTexture* texture() const { return texture_; }
@@ -43,6 +49,7 @@ private:
     SDL_GPUTransferBuffer* upload_ = nullptr;
     int width_ = 0, height_ = 0;
     bool storage_ = false;
+    bool readable_ = false;
     std::vector<std::uint32_t> pixels_;
 };
 

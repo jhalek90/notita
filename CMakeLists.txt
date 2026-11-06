@@ -91,6 +91,8 @@ if(NOTITA_BUILD_APP)
     target_link_libraries(notita PRIVATE notita_sim notita_script imgui SDL3::SDL3-static)
     # phase 6 lighting: GPU pass + the App's light inputs / UI / self-test
     target_sources(notita PRIVATE src/app/GpuLight.cpp src/app/AppLight.cpp)
+    # #477: the liquid surface pass (GpuLiquid + its App side)
+    target_sources(notita PRIVATE src/app/GpuLiquid.cpp src/app/AppLiquid.cpp)
     target_link_libraries(notita PRIVATE notita_light)
 
     # Gas grid compute kernels -> <build>/shaders/gas_<kernel>.dxil (next to the exe).
@@ -123,6 +125,16 @@ if(NOTITA_BUILD_APP)
                 VERBATIM)
             list(APPEND _gas_outputs ${_out})
         endforeach()
+        # liquid surface pass -> <build>/shaders/liquid.dxil (without it: liquids are drawn as pixels)
+        set(NOTITA_LIQUID_HLSL ${CMAKE_CURRENT_SOURCE_DIR}/src/app/shaders/liquid.hlsl)
+        set(_out ${CMAKE_BINARY_DIR}/shaders/liquid.dxil)
+        add_custom_command(OUTPUT ${_out}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+            COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -Fo ${_out} ${NOTITA_LIQUID_HLSL}
+            DEPENDS ${NOTITA_LIQUID_HLSL}
+            COMMENT "dxc liquid"
+            VERBATIM)
+        list(APPEND _gas_outputs ${_out})
         add_custom_target(notita_shaders ALL DEPENDS ${_gas_outputs})
         add_dependencies(notita notita_shaders)
     else()
