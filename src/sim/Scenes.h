@@ -12,6 +12,10 @@ void fillRect(World& w, MaterialId m, int x0, int y0, int x1, int y1, Rng& rng, 
 void fillSpawn(World& w, const MaterialRegistry& mats, MaterialId m, int x0, int y0, int x1, int y1, Rng& rng);
 // Marks the solid pixels in the rect as scene geometry (never a rigid body).
 void pinRect(World& w, const MaterialRegistry& mats, int x0, int y0, int x1, int y1);
+// Gives every non-air pixel its material's texture at its spot (Material::shadeAt,
+// #481); grain runs along the longer side of a beam. Draws no random numbers, so
+// a scene that calls it last simulates exactly as before. Every builder below does.
+void textureCells(World& w, const MaterialRegistry& mats);
 
 // A small playground: ledges, a basin, piles of powder and pools of liquid.
 void demo(World& w, const MaterialRegistry& mats, std::uint64_t seed);

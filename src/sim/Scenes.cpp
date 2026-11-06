@@ -31,14 +31,46 @@ void pinRect(World& w, const MaterialRegistry& mats, int x0, int y0, int x1, int
             if (Cell* c = w.cell(x, y); c && mats[c->material].kind == MaterialKind::Solid) c->aux = kAuxPinned;
 }
 
+void textureCells(World& w, const MaterialRegistry& mats) {
+    // how far the same material runs from (x, y) along (dx, dy), capped
+    auto run = [&](int x, int y, int dx, int dy, MaterialId m) {
+        int n = 0;
+        for (int k = 1; k <= 32; ++k) {
+            const Cell* c = w.cell(x + dx * k, y + dy * k);
+            if (!c || c->material != m) break;
+            ++n;
+        }
+        return n;
+    };
+    for (Chunk* ch : w.chunks()) {
+        const int ox = ch->originX(), oy = ch->originY();
+        for (int i = 0; i < kChunkSize * kChunkSize; ++i) {
+            Cell& c = ch->cells[static_cast<std::size_t>(i)];
+            if (c.material == kEmpty) continue;
+            const Material& m = mats[c.material];
+            const int x = ox + (i & kChunkMask), y = oy + (i >> kChunkShift);
+            int along = 0;
+            if (m.texture.enabled && m.texture.pattern == TexturePattern::Grain &&
+                run(x, y, 0, -1, c.material) + run(x, y, 0, 1, c.material) >
+                    run(x, y, -1, 0, c.material) + run(x, y, 1, 0, c.material))
+                along = 1; // an upright post: grain runs up it
+            c.shade = m.shadeAt(x, y, along);
+        }
+    }
+}
+
 namespace {
 
-// Scene builders pin every solid they place: ledges and walls stay put, and
-// only what the player adds or what the sim creates can become a body.
+// Scene builders pin every solid they place (ledges and walls stay put, and
+// only what the player adds or what the sim creates can become a body), then
+// give every pixel its texture.
 struct PinnedScene {
     World& w;
     const MaterialRegistry& mats;
-    ~PinnedScene() { pinRect(w, mats, w.minX(), w.minY(), w.minX() + w.widthPx() - 1, w.minY() + w.heightPx() - 1); }
+    ~PinnedScene() {
+        pinRect(w, mats, w.minX(), w.minY(), w.minX() + w.widthPx() - 1, w.minY() + w.heightPx() - 1);
+        textureCells(w, mats);
+    }
 };
 
 } // namespace
@@ -90,9 +122,10 @@ void randomFill(World& w, const MaterialRegistry& mats, const MaterialId (&pick)
                 c.material = pick[rng.below(static_cast<std::uint32_t>(N))];
                 c.temperature = mats[c.material].spawnTemp;
             }
-            c.shade = static_cast<std::uint8_t>(rng.below(256));
+            c.shade = static_cast<std::uint8_t>(rng.below(256)); // overwritten below; the draw keeps the mix the same
         }
     }
+    textureCells(w, mats);
     w.wakeAll();
 }
 
@@ -345,6 +378,7 @@ void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     pin(470, 200, 540, 206);
     rect("basalt", 528, 170, 566, 199); // live: more than half of it hangs over the edge
     rect("sand", 480, 320, 630, 351);
+    textureCells(w, mats);
 }
 
 void playground(World& w, const MaterialRegistry& mats, std::uint64_t seed, float* spawnX, float* spawnY) {
@@ -406,6 +440,7 @@ void playground(World& w, const MaterialRegistry& mats, std::uint64_t seed, floa
     rect("timber", 370, G + 2, 417, G + 7);
     rect("timber", 510, G + 2, 557, G + 7);
     rect("slate", 896, G + 0, 943, G + 5);
+    textureCells(w, mats);
 
     if (spawnX) *spawnX = static_cast<float>(X + px(60)) + 0.5f;
     if (spawnY) *spawnY = static_cast<float>(Y + G);

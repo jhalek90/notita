@@ -343,3 +343,45 @@ color = #ff9a2a
     CHECK_EQ(world.count(mats.idOf("wood")), std::size_t{0});
     CHECK_EQ(charMatch, chars);
 }
+
+TEST_CASE(texture_scene_builders_texture_their_pixels) {
+    MaterialRegistry mats;
+    std::vector<std::string> errors;
+    if (!mats.loadFromFile("data/materials.txt", &errors) && !mats.loadFromFile("../data/materials.txt", &errors)) {
+        std::printf("  data/materials.txt not found, skipped\n");
+        return;
+    }
+    CHECK(errors.empty());
+    World a(0, 0, 10, 6), b(0, 0, 10, 6);
+    scenes::quarry(a, mats, 77);
+    scenes::quarry(b, mats, 77);
+    // every pixel has its texture; the quarry's timber post (upright) has its grain along y
+    const MaterialId timber = mats.idOf("timber");
+    const int vy = a.heightPx() - 360;
+    std::size_t bad = 0, post = 0;
+    for (const Chunk* ch : a.chunks())
+        for (int i = 0; i < kChunkSize * kChunkSize; ++i) {
+            const Cell& c = ch->cells[static_cast<std::size_t>(i)];
+            if (c.material == kEmpty) continue;
+            const int x = ch->originX() + (i & kChunkMask), y = ch->originY() + (i >> kChunkShift);
+            const bool inPost = c.material == timber && x >= 395 && x <= 404 && y >= vy + 280 && y <= vy + 339;
+            post += inPost;
+            bad += c.shade != mats[c.material].shadeAt(x, y, inPost ? 1 : 0);
+        }
+    CHECK_EQ(bad, std::size_t{0});
+    CHECK(post > 200);
+    // the shade never steers the sim: scrambled shades simulate the same
+    Rng rng(9);
+    for (Chunk* ch : b.chunks())
+        for (Cell& c : ch->cells) c.shade = static_cast<std::uint8_t>(rng.below(256));
+    ThreadPool pool(2);
+    Simulator sa(a, mats, &pool, 5), sb(b, mats, &pool, 5);
+    for (int t = 0; t < 120; ++t) { sa.tick(); sb.tick(); }
+    std::size_t differ = 0;
+    for (std::size_t k = 0; k < a.chunks().size(); ++k)
+        for (std::size_t i = 0; i < std::size_t{kChunkSize} * kChunkSize; ++i) {
+            const Cell &ca = a.chunks()[k]->cells[i], &cb = b.chunks()[k]->cells[i];
+            differ += ca.material != cb.material || ca.temperature != cb.temperature || ca.vx != cb.vx || ca.vy != cb.vy;
+        }
+    CHECK_EQ(differ, std::size_t{0});
+}

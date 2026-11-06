@@ -119,6 +119,7 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
                 c = mats.find("slate")->spawn(static_cast<std::uint8_t>(rng.below(256)));
                 c.temperature = static_cast<float>(rng.below(1000));
             }
+        scenes::textureCells(world, mats);
         world.wakeAll();
     } else scenes::churn(world, mats, 77);
     const bool flip = scene == Scene::Flip || scene == Scene::Thermal;
