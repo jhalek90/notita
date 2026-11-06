@@ -1,4 +1,4 @@
-# notita
+﻿# notita
 
 A 2D pixel sandbox where every pixel is simulated. "notita" is the repo name;
 the game itself still needs its own name (the window says "working title").
@@ -103,4 +103,4 @@ data/materials.txt   material definitions
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
 a random mix of powders, liquids and gas. "churn" times the first ticks after
 the fill; "flip" turns the world upside down every 90 ticks so the whole
-screen keeps falling. See the phase 1 benchmark note on the board for numbers.
+screen keeps falling. Phase 1 numbers (Ryzen 7 3800X, 16 threads): about 1.3 ms per tick sustained with ~168k moving cells, 10 ms single-threaded; full table in Corvid note N250.
