@@ -123,7 +123,9 @@ void App::prepareLight() {
         if (hot) {
             // scaled by the pixel's shade, so a glowing pool keeps its grain instead of a flat blob
             const auto gi = static_cast<std::size_t>(std::min(static_cast<int>((c.temperature - 400.0f) * 0.2f), 255)) * 4;
-            const float s = 0.7f + 0.6f / 255.0f * static_cast<float>(c.shade);
+            // (#481: on a textured material only the brightness level, not the palette slot)
+            const int sv = mats_[c.material].texture.enabled ? shadeLevel(c.shade) * 17 : c.shade;
+            const float s = 0.7f + 0.6f / 255.0f * static_cast<float>(sv);
             r += heatEmit_[gi] * s; g += heatEmit_[gi + 1] * s; b += heatEmit_[gi + 2] * s;
         }
         if (c.flags & kFlagBurning) { r += 0.9f; g += 0.32f; b += 0.06f; }

@@ -673,7 +673,7 @@ private:
         n->vx = n->vy = 0;
         n->temperature = std::max(n->temperature, f.spawnTemp);
         n->life = flameLife(f);
-        n->shade = static_cast<std::uint8_t>(rng_.below(256));
+        n->shade = mats_[flame].flickerShade(x, y, rng_.below(256));
         n->stamp = stamp_;
         wake(x, y);
     }

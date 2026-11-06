@@ -245,7 +245,7 @@ TEST_CASE(texture_game_data_is_valid) {
     }
     for (auto& e : errors) std::printf("  materials: %s\n", e.c_str());
     CHECK(errors.empty());
-    for (const char* n : {"loam", "concrete", "slate", "timber", "sand", "iron", "ash"}) {
+    for (const char* n : {"loam", "concrete", "slate", "timber", "sand", "iron", "ash", "flame", "ember", "spark"}) {
         const Material* m = mats.find(n);
         CHECK(m && m->texture.enabled);
         if (!m) continue;
@@ -384,4 +384,42 @@ TEST_CASE(texture_scene_builders_texture_their_pixels) {
             differ += ca.material != cb.material || ca.temperature != cb.temperature || ca.vx != cb.vx || ca.vy != cb.vy;
         }
     CHECK_EQ(differ, std::size_t{0});
+}
+
+TEST_CASE(texture_flicker_shade_varies_at_one_spot) {
+    // flames keep spawning at the same air cell next to a burning block: the random
+    // draw has to pick the colour, or that cell would always show the same one
+    MaterialRegistry mats;
+    std::vector<std::string> errors;
+    mats.loadFromString(R"(
+[fire]
+kind = special
+density = 0.3
+color = #ff9a2a
+color_variation = 40
+palette = #d8501a*2, #ff9a2a*4, #fff0b8*1
+texture = speckle
+[plain]
+kind = special
+density = 0.3
+color = #ffffff
+)", &errors);
+    CHECK(errors.empty());
+    const Material& fire = *mats.find("fire");
+    const Material& plain = *mats.find("plain");
+    std::array<int, 16> picks{};
+    std::array<bool, 16> levels{};
+    for (std::uint32_t r = 0; r < 256; ++r) {
+        CHECK_EQ(plain.flickerShade(40, 12, r), static_cast<std::uint8_t>(r)); // untextured: exactly the old shade
+        const std::uint8_t s = fire.flickerShade(40, 12, r);
+        ++picks[fire.texture.slotColor[shadeSlot(s)]];
+        levels[shadeLevel(s)] = true;
+    }
+    // all three colours show up at the one spot, roughly by weight (2 : 4 : 1)
+    CHECK(picks[0] > 30 && picks[1] > 90 && picks[2] > 10);
+    CHECK(picks[1] > picks[0] && picks[0] > picks[2]);
+    int nLevels = 0;
+    for (bool b : levels) nLevels += b;
+    CHECK(nLevels >= 6);
+    CHECK_EQ(fire.flickerShade(40, 12, 77), fire.flickerShade(40, 12, 77)); // still a pure function
 }

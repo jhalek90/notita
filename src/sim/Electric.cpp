@@ -742,7 +742,7 @@ void ElectricSystem::effects() {
                 Cell* t = gridCell(x + kDx[d], y + kDy[d]);
                 if (t && t->material == kEmpty && !(t->flags & kFlagBody)) {
                     const float temp = std::max(t->temperature, mats_[spark_].spawnTemp);
-                    *t = mats_[spark_].spawn(static_cast<std::uint8_t>(rng.below(256)));
+                    *t = mats_[spark_].spawn(mats_[spark_].flickerShade(gx0_ + x + kDx[d], gy0_ + y + kDy[d], rng.below(256)));
                     t->temperature = temp;
                     wakeAt(x + kDx[d], y + kDy[d], true);
                     ++stats_.sparks;
@@ -814,7 +814,7 @@ void ElectricSystem::runStrike(const Strike& s) {
         if (!(m.kind == MaterialKind::Empty || m.kind == MaterialKind::Gas || m.kind == MaterialKind::Special) ||
             (c->flags & kFlagBody)) { hx = gx; hy = gy; break; }
         if (spark_ != kEmpty && c->material == kEmpty && rng.below(4) != 0) {
-            *c = mats_[spark_].spawn(static_cast<std::uint8_t>(rng.below(256)));
+            *c = mats_[spark_].spawn(mats_[spark_].flickerShade(gx0_ + gx, gy0_ + gy, rng.below(256)));
             wakeAt(gx, gy, true);
             ++stats_.sparks;
         } else if (m.kind == MaterialKind::Gas) {
