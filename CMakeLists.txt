@@ -16,6 +16,7 @@ option(NOTITA_DEPS_ONLY "Only configure third-party dependencies (bootstrap)" OF
 if(NOTITA_DEPS_ONLY)
     include(cmake/Dependencies.cmake)
     include(cmake/Luau.cmake)
+    include(cmake/Box2D.cmake)
     return()
 endif()
 
@@ -30,8 +31,13 @@ add_library(notita_sim STATIC
     src/sim/Reactions.cpp
     src/sim/GasGrid.cpp
     src/sim/GasSolverCpu.cpp
+    src/sim/Particles.cpp
+    src/sim/Bodies.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
+# Box2D v3 for the rigid bodies (src/sim/Bodies.*); still no SDL in the sim
+include(cmake/Box2D.cmake)
+target_link_libraries(notita_sim PRIVATE box2d)
 if(MSVC)
     target_compile_options(notita_sim PRIVATE /W4 /permissive- /utf-8)
     target_compile_definitions(notita_sim PUBLIC NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -55,7 +61,7 @@ target_link_libraries(notita_bench PRIVATE notita_sim notita_script)
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
 endif()

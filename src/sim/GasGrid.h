@@ -36,6 +36,8 @@
 
 namespace notita {
 
+class ParticleSystem;
+
 constexpr int kGasCell = 4;                 // pixels per grid cell side
 constexpr int kGasCellPx = kGasCell * kGasCell;
 constexpr int kMaxGasSpecies = 8;
@@ -157,6 +159,9 @@ public:
 
     // null = the built-in CPU solver
     void setSolver(GasSolver* solver) { solver_ = solver ? solver : &cpu_; }
+    // With a particle system attached, explode() throws loose pixels as momentum particles (phase 4).
+    void setParticles(ParticleSystem* particles) { particles_ = particles; }
+    float blastSpeed = 6.0f; // px/tick a blast of power 1 gives a pixel at its centre
     GasSolver& solver() { return *solver_; }
     GasGridParams& params() { return params_; }
     GasSolveParams& solveParams() { return sp_; }
@@ -230,6 +235,7 @@ private:
     void applyBlast(const Blast& b);
     double lostHeat_ = 0, sourceHeat_ = 0, latentHeat_ = 0;
     long long absorbedPending_ = 0;
+    ParticleSystem* particles_ = nullptr;
 };
 
 } // namespace notita

@@ -1,4 +1,4 @@
-﻿#include "App.h"
+#include "App.h"
 
 #include "script/ReactionScript.h"
 #include "sim/Scenes.h"
@@ -66,6 +66,12 @@ bool App::init() {
     gas_ = std::make_unique<GasGrid>(*world_, mats_, pool_.get(), opts_.seed);
     sim_->setGasExchange(gas_.get());
     sim_->params().ambientRate = 0.0f; // the grid carries the air's heat (and loses some to the ambient)
+    particles_ = std::make_unique<ParticleSystem>(*world_, mats_, pool_.get(), opts_.seed);
+    bodies_ = std::make_unique<BodySystem>(*world_, mats_, particles_.get(), opts_.seed);
+    sim_->setParticles(particles_.get());
+    particles_->setGas(gas_.get());
+    gas_->setParticles(particles_.get());
+    bodies_->setGas(gas_.get());
     gasView_ = opts_.gasView;
     for (int k = 0; k < gas_->speciesCount(); ++k) gasColor_.push_back(mats_[gas_->species(k)].color);
     brush_.material = mats_.idOf("sand");
@@ -207,7 +213,10 @@ void App::buildHeatPalettes() {
 }
 
 void App::loadScene(const std::string& name) {
+    if (particles_) particles_->clear();
+    if (bodies_) bodies_->clear();
     if (name == "churn") scenes::churn(*world_, mats_, opts_.seed);
+    else if (name == "quarry") scenes::quarry(*world_, mats_, opts_.seed);
     else if (name == "forge") scenes::forge(*world_, mats_, opts_.seed);
     else if (name == "thermal") scenes::thermalChurn(*world_, mats_, opts_.seed);
     else if (name == "gas") scenes::gasLab(*world_, mats_, opts_.seed);
@@ -268,9 +277,17 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
         else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
         else if (k == SDLK_V) loadScene("gas");
+        else if (k == SDLK_Q) loadScene("quarry");
+        else if (k == SDLK_K) {
+            int bx, by;
+            if (screenToWorld(mouseX_, mouseY_, bx, by)) bodies_->releaseClump(bx, by);
+        }
         else if (k == SDLK_X) {
             int bx, by;
-            if (screenToWorld(mouseX_, mouseY_, bx, by)) gas_->explode(bx, by, blastRadius_, blastPower_);
+            if (screenToWorld(mouseX_, mouseY_, bx, by)) {
+                gas_->explode(bx, by, blastRadius_, blastPower_);
+                bodies_->explode(bx, by, blastRadius_, blastPower_);
+            }
         }
         else if (k == SDLK_H) brush_.mode = BrushMode::Heat;
         else if (k == SDLK_J) brush_.mode = BrushMode::Cool;
@@ -280,7 +297,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_RIGHTBRACKET) brush_.radius = std::min(64, brush_.radius + 1);
         else if (k == SDLK_R) loadScene("demo");
         else if (k == SDLK_B) loadScene("churn");
-        else if (k == SDLK_C) { world_->clear(); gas_->clear(); }
+        else if (k == SDLK_C) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
         else if (k == SDLK_ESCAPE) running_ = false;
         else if (k >= SDLK_1 && k <= SDLK_9) {
             const auto id = static_cast<std::size_t>(k - SDLK_1 + 1);
@@ -347,9 +364,22 @@ void App::stepSim(double frameDt) {
 }
 
 void App::tickSim() {
+    sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->tick();
     sim_->params().ambientRate = gas_->params().enabled ? 0.0f : sim_->params().ambientRate;
+    bodies_->step();
+    particles_->step();
     gas_->step();
+}
+
+void App::drawParticles() {
+    auto& px = renderer_.pixels();
+    const int cx0 = static_cast<int>(camX_), cy0 = static_cast<int>(camY_);
+    for (const Particle& p : particles_->particles()) {
+        const int x = static_cast<int>(std::floor(p.x)) - cx0, y = static_cast<int>(std::floor(p.y)) - cy0;
+        if (x < 0 || y < 0 || x >= kViewW || y >= kViewH) continue;
+        px[static_cast<std::size_t>(y) * kViewW + x] = displayPalette_[p.cell.material][p.cell.shade];
+    }
 }
 
 void App::drawWorld() {
@@ -395,6 +425,7 @@ void App::drawWorld() {
                 }
             }
         }
+    drawParticles();
     drawGas();
 }
 
@@ -562,11 +593,14 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Gas lab (V)")) loadScene("gas");
     ImGui::SameLine();
-    if (ImGui::Button("Clear (C)")) { world_->clear(); gas_->clear(); }
+    if (ImGui::Button("Quarry (Q)")) loadScene("quarry");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
     ImGui::PopItemWidth();
     ImGui::End();
 
     drawGasUi();
+    drawPhase4Ui();
 
     // debug overlay
     const ImGuiIO& io = ImGui::GetIO();
@@ -584,6 +618,8 @@ void App::drawUi() {
     ImGui::Text("chunks %d / %d moving, %d heat", st.activeChunks, st.totalChunks, st.heatChunks);
     ImGui::Text("events %llu (changes, burns, reactions)", static_cast<unsigned long long>(st.events));
     ImGui::Text("cells moved/visited %llu", static_cast<unsigned long long>(st.cellsProcessed));
+    ImGui::Text("particles %d  bodies %d (%d px)  p4 %.2f ms", static_cast<int>(particles_->count()), bodies_->stats().bodies,
+                bodies_->stats().pixels, particles_->stats().stepMs + bodies_->stats().stepMs);
     ImGui::Text("tick #%llu  threads %d  seed %llu", static_cast<unsigned long long>(st.tick), pool_->threadCount(),
                 static_cast<unsigned long long>(sim_->seed()));
     ImGui::Text("%s", paused_ ? "PAUSED" : (speed_ != 1.0f ? "speed changed" : "60 Hz fixed tick"));
@@ -593,8 +629,9 @@ void App::drawUi() {
     int wx, wy;
     if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
         if (const Cell* c = world_->cell(wx, wy))
-            ImGui::Text("(%d, %d) %s%s  %.1f C  vy %.2f", wx, wy, mats_[c->material].label.c_str(),
-                        (c->flags & kFlagBurning) ? " (burning)" : "", c->temperature, c->vy / 256.0);
+            ImGui::Text("(%d, %d) %s%s%s%s  %.1f C  vy %.2f", wx, wy, mats_[c->material].label.c_str(),
+                        (c->flags & kFlagBurning) ? " (burning)" : "", (c->flags & kFlagBody) ? " (body)" : "",
+                        c->aux == kAuxPinned ? " (pinned)" : c->aux == kAuxSettled ? " (settled)" : "", c->temperature, c->vy / 256.0);
     }
     if (!materialErrors_.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%zu material/reaction error(s), see log", materialErrors_.size());
     ImGui::End();
@@ -644,6 +681,37 @@ void App::drawGasUi() {
                 if (f.m(k, c) > 0) ImGui::Text("  %s %.2f", mats_[gas_->species(k)].label.c_str(), static_cast<double>(f.m(k, c)) / kGasMassOne);
         }
     }
+    ImGui::PopItemWidth();
+    ImGui::End();
+}
+
+void App::drawPhase4Ui() {
+    SimParams& sp = sim_->params();
+    ParticleParams& pp = particles_->params();
+    BodyParams& bp = bodies_->params();
+    const ParticleStats& ps = particles_->stats();
+    const BodyStats& bs = bodies_->stats();
+    ImGui::SetNextWindowPos(ImVec2(400, 640), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Splashes & bodies", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
+    ImGui::Checkbox("Splash particles", &particlesOn_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Rigid bodies", &bp.enabled);
+    ImGui::SliderFloat("Splash speed", &sp.splashSpeed, 2.0f, 12.0f, "%.1f px/tick");
+    ImGui::SliderFloat("Restitution", &sp.restitution, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Mix rate", &sp.mixRate, 0.0f, 0.5f, "%.2f");
+    ImGui::SliderFloat("Wind on particles", &pp.gasDrag, 0.0f, 0.5f, "%.2f");
+    ImGui::SliderFloat("Shatter speed", &bp.shatterSpeed, 1.0f, 20.0f, "%.1f px/tick");
+    ImGui::SliderInt("Min body px", &bp.minPixels, 1, 64);
+    ImGui::SliderFloat("Wind on bodies", &bp.gasDrag, 0.0f, 0.2f, "%.3f");
+    ImGui::SliderFloat("Pressure on bodies", &bp.gasPush, 0.0f, 4.0f, "%.2f");
+    ImGui::TextDisabled("K: cut the clump under the cursor loose, X: blast");
+    ImGui::Text("particles %d (+%d, settled %d, waiting %d) %.2f ms", ps.count, ps.spawned, ps.settled, ps.waiting, ps.stepMs);
+    ImGui::Text("splashed %d px, momentum out/in %.2f", sim_->stats().splashed,
+                sim_->stats().splashMomentumIn > 0 ? sim_->stats().splashMomentumOut / sim_->stats().splashMomentumIn : 0.0);
+    ImGui::Text("bodies %d (%d awake, %d px, %d hidden) %.2f ms", bs.bodies, bs.awake, bs.pixels, bs.hidden, bs.stepMs);
+    ImGui::Text("  search %.2f ms, box2d %.2f ms, %d terrain boxes", bs.findMs, bs.solveMs, bs.terrainShapes);
+    ImGui::Text("  this tick: +%d, frozen %d, shattered %d, shoved %d px", bs.created, bs.frozen, bs.shattered, bs.displaced);
     ImGui::PopItemWidth();
     ImGui::End();
 }

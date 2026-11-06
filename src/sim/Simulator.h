@@ -25,6 +25,8 @@
 
 namespace notita {
 
+class ParticleSystem;
+
 struct SimStats {
     double        tickMs = 0.0;      // wall time of the last tick
     int           activeChunks = 0;  // chunks with a non-empty dirty rect (motion)
@@ -33,6 +35,9 @@ struct SimStats {
     std::uint64_t cellsProcessed = 0; // moving cells visited last tick
     std::uint64_t events = 0;        // state changes, ignitions, burn-outs and reactions last tick
     std::uint64_t tick = 0;
+    int    splashed = 0;             // pixels that left the grid as splash particles last tick
+    double splashMomentumIn = 0.0;   // |momentum| (mass units * px/tick) of the impacts that splashed
+    double splashMomentumOut = 0.0;  // |momentum| handed to the ejecta (<= restitution * in)
 };
 
 struct SimParams {
@@ -42,6 +47,12 @@ struct SimParams {
     float conduction = 1.0f;     // scales every conductivity (0..1 is the stable range)
     float ambientTemp = kAmbientTemp;
     float ambientRate = 0.004f;  // fraction per tick that air relaxes towards ambientTemp (0 = sealed)
+    // phase 4: splashes (only with a ParticleSystem attached) and liquid mixing
+    float splashSpeed = 5.0f;    // px per tick a liquid must hit with to splash
+    float restitution = 0.6f;    // share of the impact momentum the ejecta may carry
+    float splashChance = 0.7f;   // chance per candidate surface pixel to fly
+    float mixRate = 0.1f;        // chance per tick a miscible liquid swaps with a different miscible neighbour
+    int   mixSteps = 48;         // swaps a pixel may take part in before it counts as blended (Cell::aux)
 };
 
 // Per-material values the tick needs, precomputed from the registry.
@@ -85,6 +96,8 @@ public:
     void setReactions(const ReactionTable* reactions);
     // Phase 3 hook: hand created gases and ambient heat to the gas grid (null = off).
     void setGasExchange(GasExchange* exchange);
+    // Phase 4 hook: liquids hit hard leave the grid as particles (null = off, no splashes).
+    void setParticles(ParticleSystem* particles) { particles_ = particles; }
 
     const std::vector<ThermalProps>& thermal() const { return thermal_; }
 
@@ -103,10 +116,12 @@ private:
 
     const ReactionTable* reactions_ = nullptr;
     GasExchange* gas_ = nullptr;
+    ParticleSystem* particles_ = nullptr;
     std::vector<ThermalProps> thermal_;
     std::vector<PairConduct> pairs_;   // n * n
     std::vector<std::uint16_t> reactPairs_; // n * n: reaction index + 1, or 0
     float tablesConduction_ = -1.0f;   // params_.conduction the tables were built for
+    bool anyMiscible_ = false;
     std::vector<GasEmission> emissions_;
 };
 

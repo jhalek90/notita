@@ -3,9 +3,11 @@
 // and the ImGui panels (sandbox tools + debug overlay).
 #include "GpuGasSolver.h"
 #include "Renderer.h"
+#include "sim/Bodies.h"
 #include "sim/Brush.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
+#include "sim/Particles.h"
 #include "sim/Reactions.h"
 #include "sim/Simulator.h"
 #include "sim/ThreadPool.h"
@@ -23,7 +25,7 @@ namespace notita {
 struct AppOptions {
     int  frames = 0;            // > 0: quit after this many frames (smoke runs)
     std::string screenshot;     // with frames: write the last view to this .bmp
-    std::string scene = "demo"; // demo | forge | churn | thermal | empty
+    std::string scene = "demo"; // demo | forge | churn | thermal | gas | quarry | empty
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
@@ -48,7 +50,9 @@ private:
     void handleEvent(const SDL_Event& e);
     void updateInput(float dt);
     void stepSim(double frameDt);
-    void tickSim();       // one sim tick plus one gas grid step
+    void tickSim();       // one sim tick, then bodies, particles and the gas grid step
+    void drawParticles();
+    void drawPhase4Ui();
     void drawGas();       // gas over the pixels, or the velocity / pressure view
     void drawGasUi();
     void loadScene(const std::string& name);
@@ -75,6 +79,9 @@ private:
     std::unique_ptr<ThreadPool> pool_;
     std::unique_ptr<Simulator> sim_;
     std::unique_ptr<GasGrid> gas_;
+    std::unique_ptr<ParticleSystem> particles_;
+    std::unique_ptr<BodySystem> bodies_;
+    bool particlesOn_ = true;
     std::unique_ptr<GpuGasSolver> gpuGas_; // null when the GPU path is unavailable
     std::string gpuGasError_;
     bool useGpuGas_ = true;

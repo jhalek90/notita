@@ -1,5 +1,7 @@
 #include "GasGrid.h"
 
+#include "Particles.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -534,6 +536,21 @@ void GasGrid::explode(int x, int y, int radius, float power) {
             if (c && looseKind(mats_[c->material].kind)) loose.push_back({qx, qy, d});
         }
     std::stable_sort(loose.begin(), loose.end(), [](const Px& a, const Px& b) { return a.d > b.d; });
+    if (particles_) {
+        // phase 4: the debris flies as particles and lands wherever it stops
+        Rng rng = cellRng(x * 7919 + y, 13);
+        for (const Px& p : loose) {
+            const float d = std::max(p.d, 0.5f);
+            float nx = static_cast<float>(p.x - x) / d, ny = static_cast<float>(p.y - y) / d - 0.5f;
+            const float len = std::sqrt(nx * nx + ny * ny);
+            nx /= len;
+            ny /= len;
+            const float sp = blastSpeed * power * (1.0f - p.d / (static_cast<float>(radius) + 1.0f)) * (0.6f + 0.6f * rng.unit());
+            if (sp < 0.5f) continue;
+            particles_->launch(p.x, p.y, nx * sp, ny * sp);
+        }
+        return;
+    }
     for (const Px& p : loose) {
         const float d = std::max(p.d, 0.5f);
         // outwards with a lift, so a crater opens and the debris flies up

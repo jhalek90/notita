@@ -1,5 +1,6 @@
-﻿#include "Simulator.h"
+#include "Simulator.h"
 
+#include "Particles.h"
 #include "Rng.h"
 
 #include <algorithm>
@@ -25,6 +26,9 @@ struct TickContext {
     const ReactionTable* reactions; // null when off
     const std::uint16_t* reactPairs; // [a * matCount + b]: reaction index + 1, or 0
     bool gasHook;
+    const std::uint8_t* miscible;    // [a * matCount + b]: the two liquids blend
+    bool anyMiscible;
+    bool particles;                  // a ParticleSystem takes splashes
 };
 
 // Everything one chunk update needs. Lives on the worker's stack.
@@ -109,8 +113,12 @@ private:
         wake(bx, by);
     }
 
+    bool miscible(const Material& a, const Material& b) const {
+        return ctx_.anyMiscible && ctx_.miscible[a.id * ctx_.matCount + b.id] != 0;
+    }
+
     // Can a pixel of material m move into a cell holding t, moving vertically by dy?
-    static bool canDisplace(const Material& m, const Material& t, int dy) {
+    bool canDisplace(const Material& m, const Material& t, int dy) const {
         // a heavy liquid percolates down through a lighter powder (sand floats on quickmetal)
         if (t.kind == MaterialKind::Powder)
             return dy > 0 && m.kind == MaterialKind::Liquid && t.density < m.density;
@@ -121,7 +129,8 @@ private:
             if (dy > 0) return t.density < m.density;
             return t.kind == MaterialKind::Empty;
         }
-        if (dy > 0) return t.density < m.density;
+        // miscible liquids blend by diffusion (updateLiquid) instead of layering
+        if (dy > 0) return t.density < m.density && !(t.kind == MaterialKind::Liquid && miscible(m, t));
         if (dy == 0) return t.kind != MaterialKind::Liquid;
         return false;
     }
@@ -167,7 +176,103 @@ private:
         }
         // drag in liquids keeps sinking slow; otherwise keep the momentum
         c->vy = static_cast<std::int16_t>(moved ? (inLiquid ? std::min(vy, kVelOne / 2) : vy) : 0);
+        // a liquid that fell this tick and was stopped hard splashes (phase 4)
+        if (moved && !inLiquid && ctx_.particles && m.kind == MaterialKind::Liquid &&
+            static_cast<float>(vy) >= params_.splashSpeed * kVelOne) {
+            const Cell* below = at(x, y + 1);
+            if (below && !(below->flags & kFlagBody) && !canDisplace(m, mats_[below->material], 1)) splash(x, y, c, m, vy, *below);
+        }
         return moved;
+    }
+
+    // ------------------------------------------------------------- splashes
+
+    // (x, y) holds a liquid that just hit `below` at vy (fixed point). The
+    // surface pixels of the pool around the impact (and, on hard ground, the
+    // drop itself) fly off as particles. The ejecta share at most
+    // `restitution` of the impact momentum: each gets a random share of the
+    // budget until it is spent. Candidates stay within 3 px (inside kMaxReach).
+    void splash(int x, int y, Cell* c, const Material& m, int vy, const Cell& below) {
+        const float speed = static_cast<float>(vy) / kVelOne;
+        const float impactP = speed * static_cast<float>(m.mass);
+        float budget = impactP * params_.restitution;
+        if (budget <= 0.0f) return;
+        const bool pool = mats_[below.material].kind == MaterialKind::Liquid;
+        const auto chance16 = static_cast<std::uint32_t>(params_.splashChance * 65536.0f);
+        struct Cand { Cell* cell; int x, y, side; };
+        Cand cands[7];
+        int n = 0;
+        for (int k = 1; k <= 3; ++k)
+            for (int side = -1; side <= 1; side += 2) {
+                Cell* s = at(x + side * k, y + 1);
+                Cell* above = at(x + side * k, y);
+                if (!s || !above || s->stamp == stamp_ || (s->flags & kFlagBody)) continue;
+                if (mats_[s->material].kind != MaterialKind::Liquid || above->material != kEmpty) continue;
+                cands[n++] = {s, x + side * k, y + 1, side};
+            }
+        if (!pool) cands[n++] = {c, x, y, 0}; // a drop on hard ground bursts sideways
+        const int start = n > 1 ? static_cast<int>(rng_.below(static_cast<std::uint32_t>(n))) : 0;
+        double out = 0.0;
+        for (int q = 0; q < n && budget > 0.05f; ++q) {
+            const Cand& cd = cands[(start + q) % n];
+            if (!rng_.chance16(chance16)) continue;
+            const Material& cm = mats_[cd.cell->material];
+            const float cmass = static_cast<float>(std::max(cm.mass, 1));
+            const float share = (0.25f + 0.5f * rng_.unit()) * budget;        // momentum handed to this one
+            const float sp = std::min(share / cmass, params_.splashSpeed * 2.5f);
+            budget -= sp * cmass;
+            // up and outwards; the drop itself skids low and sideways
+            const float a = cd.side == 0 ? (0.9f + 0.5f * rng_.unit()) : (0.25f + 0.8f * rng_.unit()); // radians from vertical
+            const int side = cd.side != 0 ? cd.side : (rng_.coin() ? 1 : -1);
+            Particle p;
+            p.x = static_cast<float>(cd.x) + 0.5f;
+            p.y = static_cast<float>(cd.y) + 0.5f;
+            p.vx = static_cast<float>(side) * sp * std::sin(a);
+            p.vy = -sp * std::cos(a);
+            p.cell = *cd.cell;
+            p.cell.stamp = 0;
+            p.cell.flags = 0;
+            p.cell.vx = p.cell.vy = 0;
+            self_.particlesOut.push_back(p);
+            out += static_cast<double>(sp) * cmass;
+            *cd.cell = Cell{};
+            cd.cell->temperature = params_.ambientTemp;
+            cd.cell->stamp = stamp_;
+            wake(cd.x, cd.y);
+        }
+        if (out > 0.0) {
+            self_.splashIn += impactP;
+            self_.splashOut += out;
+            if (c->material == kEmpty) return; // the drop itself flew off
+            c->vy = 0; // the rest of the momentum went into the pool / the ground
+        }
+    }
+
+    // Miscible liquids interdiffuse: a random swap with a different miscible
+    // neighbour. Cell::aux counts a pixel's swaps: it starts swaps while under
+    // mixSteps and is taken along while under twice that, so every pixel's
+    // mixing is bounded, a blended pool sleeps, and fresh liquid (aux 0) still
+    // works its way into a pool that has settled.
+    bool mix(int x, int y, Cell* c, const Material& m) {
+        if (m.miscibleWith.empty() || c->aux >= params_.mixSteps) return false;
+        static constexpr int kDx[4] = {1, -1, 0, 0}, kDy[4] = {0, 0, 1, -1};
+        const int first = static_cast<int>(rng_.below(4));
+        bool partner = false;
+        for (int k = 0; k < 4; ++k) {
+            const int d = (first + k) & 3;
+            Cell* t = at(x + kDx[d], y + kDy[d]);
+            if (!t || t->material == c->material || t->stamp == stamp_) continue;
+            const Material& tm = mats_[t->material];
+            if (tm.kind != MaterialKind::Liquid || !miscible(m, tm) || t->aux >= 2 * params_.mixSteps) continue;
+            partner = true;
+            if (rng_.unit() >= params_.mixRate) continue;
+            if (c->aux < 255) ++c->aux;
+            if (t->aux < 255) ++t->aux;
+            swapCells(c, x, y, t, x + kDx[d], y + kDy[d]);
+            return true;
+        }
+        if (partner) wake(x, y);
+        return false;
     }
 
 
@@ -193,6 +298,8 @@ private:
 
     void updateLiquid(int x, int y, Cell* c, const Material& m) {
         if (fall(x, y, c, m)) return;
+        if (c->material == kEmpty) return; // splashed away
+        if (ctx_.anyMiscible && mix(x, y, c, m)) return;
 
         int d = rng_.coin() ? 1 : -1;
         for (int k = 0; k < 2; ++k, d = -d) {
@@ -212,7 +319,7 @@ private:
             auto canGo = [&](const Cell* n) {
                 if (!n) return false;
                 const Material& nm = mats_[n->material];
-                return canDisplace(m, nm, 0) || (nm.kind == MaterialKind::Liquid && nm.density < m.density);
+                return canDisplace(m, nm, 0) || (nm.kind == MaterialKind::Liquid && nm.density < m.density && !miscible(m, nm));
             };
             if (canGo(at(x - 1, y)) || canGo(at(x + 1, y))) wake(x, y);
             return;
@@ -237,7 +344,7 @@ private:
             Cell* t = at(x + d, y);
             if (!t) continue;
             const Material& tm = mats_[t->material];
-            if (tm.kind != MaterialKind::Liquid || tm.density >= m.density) continue;
+            if (tm.kind != MaterialKind::Liquid || tm.density >= m.density || miscible(m, tm)) continue;
             if (rng_.unit() < sinkChance(m, tm)) {
                 swapCells(c, x, y, t, x + d, y);
                 return;
@@ -690,6 +797,8 @@ void Simulator::rebuildTables() {
             pairs_[i * n + j] = {g * ia, g * ib};
         }
     tablesConduction_ = params_.conduction;
+    anyMiscible_ = false;
+    for (std::uint8_t v : mats_.miscibleTable()) anyMiscible_ = anyMiscible_ || v != 0;
 
     reactPairs_.assign(n * n, 0);
     if (reactions_) {
@@ -708,7 +817,8 @@ void Simulator::updateChunk(Chunk& chunk, int pass) {
                                       chunkKey(chunk.coord.x, chunk.coord.y));
     const auto stamp = static_cast<std::uint16_t>(tick_ % 65535u + 1u); // never 0 (fresh cells)
     const TickContext ctx{&mats_, &params_, thermal_.data(), pairs_.data(), mats_.size(),
-                          params_.reactions ? reactions_ : nullptr, reactPairs_.data(), gas_ != nullptr};
+                          params_.reactions ? reactions_ : nullptr, reactPairs_.data(), gas_ != nullptr,
+                          mats_.miscibleTable().data(), anyMiscible_, particles_ != nullptr};
     ChunkUpdate u(world_, ctx, chunk, s, stamp);
     chunk.cellsProcessed = u.run();
 }
@@ -738,17 +848,28 @@ void Simulator::tick() {
     }
 
     std::uint64_t processed = 0, events = 0;
-    double ambient = 0.0;
+    double ambient = 0.0, splashIn = 0.0, splashOut = 0.0;
+    int splashed = 0;
     emissions_.clear();
     for (Chunk* c : world_.chunks()) {
         processed += c->cellsProcessed;
         events += c->events;
         ambient += c->ambientEnergy;
+        splashIn += c->splashIn;
+        splashOut += c->splashOut;
         if (!c->gasOut.empty()) {
             emissions_.insert(emissions_.end(), c->gasOut.begin(), c->gasOut.end());
             c->gasOut.clear();
         }
+        if (!c->particlesOut.empty()) {
+            if (particles_) particles_->add(c->particlesOut.data(), c->particlesOut.size());
+            splashed += static_cast<int>(c->particlesOut.size());
+            c->particlesOut.clear();
+        }
     }
+    stats_.splashed = splashed;
+    stats_.splashMomentumIn = splashIn;
+    stats_.splashMomentumOut = splashOut;
     if (gas_) {
         gas_->absorb(emissions_.data(), emissions_.size());
         gas_->ambientHeat(ambient);

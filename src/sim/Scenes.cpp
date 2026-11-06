@@ -1,5 +1,7 @@
 #include "Scenes.h"
 
+#include "Bodies.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <iterator>
@@ -23,9 +25,28 @@ void fillSpawn(World& w, const MaterialRegistry& mats, MaterialId m, int x0, int
     fillRect(w, m, x0, y0, x1, y1, rng, mats[m].spawnTemp);
 }
 
+void pinRect(World& w, const MaterialRegistry& mats, int x0, int y0, int x1, int y1) {
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x)
+            if (Cell* c = w.cell(x, y); c && mats[c->material].kind == MaterialKind::Solid) c->aux = kAuxPinned;
+}
+
+namespace {
+
+// Scene builders pin every solid they place: ledges and walls stay put, and
+// only what the player adds or what the sim creates can become a body.
+struct PinnedScene {
+    World& w;
+    const MaterialRegistry& mats;
+    ~PinnedScene() { pinRect(w, mats, w.minX(), w.minY(), w.minX() + w.widthPx() - 1, w.minY() + w.heightPx() - 1); }
+};
+
+} // namespace
+
 void demo(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     Rng rng(seed);
     w.clear();
+    PinnedScene pin{w, mats};
     const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
     const MaterialId slate = mats.idOf("slate"), bedrock = mats.idOf("bedrock");
     const MaterialId sand = mats.idOf("sand"), grit = mats.idOf("cinder_grit");
@@ -102,6 +123,7 @@ void thermalChurn(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
 void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     Rng rng(seed);
     w.clear();
+    PinnedScene pin{w, mats};
     const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
     auto id = [&](const char* n) { return mats.idOf(n); };
     const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
@@ -147,6 +169,7 @@ void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
 void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     Rng rng(seed);
     w.clear();
+    PinnedScene pin{w, mats};
     const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
     auto id = [&](const char* n) { return mats.idOf(n); };
     const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
@@ -191,6 +214,57 @@ void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     rect("slate", 500, 300, 505, 351);
     rect("slate", 615, 300, 620, 351);
     rect("water", 506, 330, 614, 351);
+}
+
+void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
+    Rng rng(seed);
+    w.clear();
+    const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
+    auto id = [&](const char* n) { return mats.idOf(n); };
+    const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
+    auto rect = [&](const char* m, int x0, int y0, int x1, int y1) {
+        fillSpawn(w, mats, id(m), vx + x0, vy + y0, vx + x1, vy + y1, rng);
+    };
+    auto hot = [&](const char* m, float t, int x0, int y0, int x1, int y1) {
+        fillRect(w, id(m), vx + x0, vy + y0, vx + x1, vy + y1, rng, t);
+    };
+    auto pin = [&](int x0, int y0, int x1, int y1) { pinRect(w, mats, vx + x0, vy + y0, vx + x1, vy + y1); };
+    fillRect(w, id("bedrock"), X, Y + H - 8, X + W - 1, Y + H - 1, rng); // floor
+
+    // 1. a waterfall: water held high on a slate shelf spills off its end into a basin far below
+    rect("slate", 10, 60, 90, 64);
+    rect("slate", 10, 20, 14, 59);
+    rect("water", 15, 24, 85, 59);
+    rect("slate", 20, 300, 25, 351);
+    rect("slate", 150, 300, 155, 351);
+    rect("water", 26, 330, 149, 351);
+    pin(10, 20, 90, 64);
+    pin(20, 300, 155, 351);
+
+    // 2. two cups: tincture poured into water blends; lamp oil poured onto water layers
+    rect("slate", 190, 250, 193, 351);
+    rect("slate", 250, 250, 253, 351);
+    rect("water", 194, 310, 249, 351);
+    rect("tincture", 200, 150, 240, 200);
+    rect("slate", 270, 250, 273, 351);
+    rect("slate", 330, 250, 333, 351);
+    rect("water", 274, 310, 329, 351);
+    rect("lamp_oil", 280, 150, 320, 200);
+    pin(190, 250, 333, 351);
+
+    // 3. slate blocks stacked on a timber post that is lit at the bottom: when it burns through they drop and break
+    rect("slate", 360, 340, 440, 351);
+    pin(360, 340, 440, 351);
+    rect("timber", 395, 280, 404, 339);
+    hot("timber", 700.0f, 395, 330, 404, 339);
+    rect("slate", 380, 262, 420, 279);  // live: a slab on the post
+    rect("iron", 388, 240, 412, 261);   // and an iron block on the slab
+
+    // 4. a boulder teetering over the edge of a ledge, above a sand bed
+    rect("slate", 470, 200, 540, 206);
+    pin(470, 200, 540, 206);
+    rect("basalt", 528, 170, 566, 199); // live: more than half of it hangs over the edge
+    rect("sand", 480, 320, 630, 351);
 }
 
 void flipVertical(World& w) {
