@@ -567,3 +567,33 @@ TEST_CASE(brush_heats_and_cools) {
     applyBrush(*f.world, f.mats, p, 10, 10, rng);
     CHECK(f.temp(10, 10) == 950.0f);
 }
+
+TEST_CASE(forge_scene_with_default_data_stays_sane) {
+    std::vector<std::string> errors;
+    MaterialRegistry mats = MaterialRegistry::loadDefault(&errors);
+    ReactionTable table(mats);
+    loadDefaultReactions(table, &errors);
+    CHECK(errors.empty());
+    World world(0, 0, 10, 6);
+    ThreadPool pool(4);
+    Simulator sim(world, mats, &pool, 9, &table);
+    scenes::forge(world, mats, 9);
+    const long long mass0 = world.totalMass(mats);
+    bool conserved = true;
+    std::uint64_t events = 0;
+    for (int t = 0; t < 1500; ++t) {
+        sim.tick();
+        events += sim.stats().events;
+        if (t % 50 == 0) conserved = conserved && world.totalMass(mats) == mass0;
+    }
+    CHECK(conserved);
+    CHECK(events > 100); // things boiled, burnt and reacted
+    bool sane = true;
+    for (const Chunk* c : world.chunks())
+        for (const Cell& cell : c->cells)
+            sane = sane && std::isfinite(cell.temperature) && cell.temperature >= kMinTemp && cell.temperature <= kMaxTemp;
+    CHECK(sane);
+    CHECK(world.count(mats.idOf("rust_salt")) > 0);  // etchant ate some iron
+    CHECK(world.count(mats.idOf("frost")) < 61u * 62u); // frost melted
+    CHECK(world.count(mats.idOf("basalt")) > 0);     // water quenched magma
+}
