@@ -124,6 +124,8 @@ void forge(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
 
     // timber hut over a pool of lamp oil, set alight at one corner
     rect("slate", 196, 340, 312, 351);
+    rect("slate", 196, 322, 199, 339); // tray walls keep the oil under the hut
+    rect("slate", 309, 322, 312, 339);
     rect("lamp_oil", 200, 330, 308, 339);
     rect("timber", 204, 270, 209, 329);
     rect("timber", 299, 270, 304, 329);
