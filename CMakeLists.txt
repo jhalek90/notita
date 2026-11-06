@@ -34,6 +34,9 @@ add_library(notita_sim STATIC
     src/sim/Particles.cpp
     src/sim/Bodies.cpp
     src/sim/Player.cpp
+    src/sim/ChunkCodec.cpp
+    src/sim/WorldGen.cpp
+    src/sim/Streamer.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
 # Box2D v3 for the rigid bodies (src/sim/Bodies.*); still no SDL in the sim
@@ -60,11 +63,20 @@ endif()
 add_executable(notita_bench src/bench/bench_main.cpp)
 target_link_libraries(notita_bench PRIVATE notita_sim notita_script)
 
+# ---- Lighting (phase 6): CPU reference of the GPU light pass (src/app/shaders/light.hlsl); no SDL ----
+add_library(notita_light STATIC src/light/Lighting.cpp)
+target_link_libraries(notita_light PUBLIC notita_sim)
+if(MSVC)
+    target_compile_options(notita_light PRIVATE /W4 /permissive- /utf-8)
+endif()
+
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
+    target_sources(notita_tests PRIVATE tests/test_light.cpp)
+    target_link_libraries(notita_tests PRIVATE notita_light)
 endif()
 
 if(NOTITA_BUILD_APP)
@@ -76,6 +88,9 @@ if(NOTITA_BUILD_APP)
         src/app/GpuGasSolver.cpp
     )
     target_link_libraries(notita PRIVATE notita_sim notita_script imgui SDL3::SDL3-static)
+    # phase 6 lighting: GPU pass + the App's light inputs / UI / self-test
+    target_sources(notita PRIVATE src/app/GpuLight.cpp src/app/AppLight.cpp)
+    target_link_libraries(notita PRIVATE notita_light)
 
     # Gas grid compute kernels -> <build>/shaders/gas_<kernel>.dxil (next to the exe).
     # dxc ships with the Windows SDK; without it the app falls back to the CPU solver.
@@ -91,6 +106,19 @@ if(NOTITA_BUILD_APP)
                 COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -D K_${_def} -Fo ${_out} ${NOTITA_GAS_HLSL}
                 DEPENDS ${NOTITA_GAS_HLSL}
                 COMMENT "dxc gas_${kernel}"
+                VERBATIM)
+            list(APPEND _gas_outputs ${_out})
+        endforeach()
+        # view lighting kernels -> <build>/shaders/light_<kernel>.dxil (without them: CPU lighting)
+        set(NOTITA_LIGHT_HLSL ${CMAKE_CURRENT_SOURCE_DIR}/src/app/shaders/light.hlsl)
+        foreach(kernel cells mip sky trace tent blur composite)
+            string(TOUPPER ${kernel} _def)
+            set(_out ${CMAKE_BINARY_DIR}/shaders/light_${kernel}.dxil)
+            add_custom_command(OUTPUT ${_out}
+                COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/shaders
+                COMMAND ${NOTITA_DXC} -nologo -T cs_6_0 -E main -HV 2021 -D K_${_def} -Fo ${_out} ${NOTITA_LIGHT_HLSL}
+                DEPENDS ${NOTITA_LIGHT_HLSL}
+                COMMENT "dxc light_${kernel}"
                 VERBATIM)
             list(APPEND _gas_outputs ${_out})
         endforeach()

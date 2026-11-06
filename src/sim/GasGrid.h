@@ -189,6 +189,33 @@ public:
     double latentHeat() const { return latentHeat_; } // given to pixels by condensing (latent part)
     float temperature(int i) const;               // grid cell temperature
 
+    // ---- phase 6: streaming and saves ----
+    // The grid cells over one 64x64 px chunk (16x16 cells), in that chunk's
+    // row-major order: what a sleeping chunk keeps of the grid. Each cell owns
+    // its left (u) and top (v) face. Mass is per species index (speciesCount()).
+    struct ChunkCells {
+        int species = 0;
+        std::vector<std::int32_t> mass;   // species * 256
+        std::vector<float> heat, u, v, p, extra, open, src; // open/src: the particles, bodies and player read them before the next step rebuilds them
+        std::vector<std::uint8_t> burnt;
+        bool empty() const { return mass.empty(); }
+        std::int64_t massFixed() const;
+    };
+    static constexpr int kChunkCellsSide = kChunkSize / kGasCell; // 16
+    // Copies the cells of chunk (cx, cy) out; clear = they leave the grid
+    // (mass, heat and motion zeroed there, so the grid total drops by exactly
+    // out.massFixed()). False when the chunk is outside the grid.
+    bool exportChunk(int cx, int cy, ChunkCells& out, bool clear);
+    // Puts stored cells back (adds the mass; the cells should be empty).
+    bool importChunk(int cx, int cy, const ChunkCells& in);
+    // Moves the grid's window to a new pixel origin (a multiple of the chunk
+    // size), same size. Cells that fall off the grid are dropped: export them
+    // first. Returns the fixed-point mass dropped (0 when done right).
+    std::int64_t rebase(int originX, int originY);
+    std::uint64_t tickCount() const { return tick_; }
+    void setTickCount(std::uint64_t t) { tick_ = t; }
+    void setHeatTotals(double lost, double source, double latent) { lostHeat_ = lost; sourceHeat_ = source; latentHeat_ = latent; }
+
 private:
     void buildObstacles();
     void injectPending();

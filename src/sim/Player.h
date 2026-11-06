@@ -59,6 +59,7 @@ public:
     bool take(MaterialId m, long long n = 1);
     long long totalMass(const MaterialRegistry& mats) const; // what it holds (0 in creative)
     const std::vector<long long>& counts() const { return count_; }
+    void setCount(MaterialId m, long long n) { if (m >= count_.size()) count_.resize(m + 1u, 0); count_[m] = n; }
 
 private:
     std::vector<long long> count_;
@@ -136,6 +137,16 @@ struct PlayerStats {
     bool  blasted = false;        // a charge went off this tick
 };
 
+// Phase 6: the player's dynamic state, for save files (the inventory is saved on its own).
+struct PlayerState {
+    float x = 0, y = 0, vx = 0, vy = 0, spawnX = 0, spawnY = 0, health = 100.0f;
+    std::uint64_t tick = 0;
+    int airTicks = 0, sinceHurt = 0, facing = 1;
+    bool grounded = false, stuck = false, ignorePowder = false, wasJump = false, gliding = false;
+    bool rope = false;               // a rope to a world pixel (a rope on a body is dropped on save)
+    float ropeX = 0, ropeY = 0, ropeLen = 0;
+};
+
 class Player {
 public:
     Player(World& world, const MaterialRegistry& mats, std::uint64_t seed);
@@ -149,6 +160,10 @@ public:
     void step(const PlayerInput& in);
     // The player's share of a blast (blastAt calls this).
     void explode(int x, int y, int radius, float power);
+    PlayerState state() const;
+    void setState(const PlayerState& st);
+    float spawnX() const { return spawnX_; }
+    float spawnY() const { return spawnY_; }
 
     float x() const { return x_; }
     float y() const { return y_; }

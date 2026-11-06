@@ -16,7 +16,11 @@ player: a 20 px capsule that walks, jumps, swims and glides through the
 pixel world, digs material into an inventory and places it back, with a
 creative mode and movement tools that all act through the sim (a jet that
 puts real gas into the grid, a grapple, blast jumps, rafts that float by
-density, freezing water to walk on). The full plan lives in Corvid note N249.
+density, freezing water to walk on). Phase 6 makes the world endless: a
+procedural world (biomes, layered rock, caves, water tables, magma and gas
+pockets) streamed by chunk around the player, with compressed, versioned
+save files that carry every system's state, plus emissive-pixel lighting
+with soft shadows and bloom on the GPU. The full plan lives in Corvid note N249.
 
 ## Build (Windows, MSVC)
 
@@ -54,15 +58,20 @@ build\notita.exe --scene gas      :: gas lab: boiling pot, chimney, hydrogen cav
 build\notita.exe --scene quarry   :: phase 4: waterfall, blending liquids, blocks on a burning post, a boulder
 build\notita.exe --scene play     :: phase 5: the player in a playground (hill, lake, rafts, cliff, updraft, quickmetal tub)
 build\notita.exe --autoplay       :: the play scene with the player driven through a short demo
+build\notita.exe --scene world    :: phase 6: the endless procedural world, streamed around the player
+build\notita.exe --load notita_world.sav   :: open a saved world (F8 saves, F9 loads in the world scene)
+build\notita.exe --scene world --autoplay  :: the player walks east digging (a streaming smoke run)
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
+build\notita.exe --light-selftest :: GPU light pass vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
 build\notita_bench.exe [ticks] [threads...]
 ```
 
 Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`
 (run N frames, save the sim view, quit: handy for smoke tests),
-`--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`.
+`--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`,
+`--light-cpu` (light pass on the CPU reference), `--no-light`.
 
 Controls:
 
@@ -79,7 +88,8 @@ Controls:
 | Ctrl + left / right mouse | heat / cool under the brush |
 | `H` / `J` / `P` | brush mode: heat / cool / paint |
 | `R` / `F` / `B` / `C` | demo scene / forge scene / full churn scene / clear |
-| F3 / F4 | chunk grid / dirty rects overlay |
+| F3 / Shift+F4 | chunk grid / dirty rects overlay |
+| F4 | lighting on/off (Lighting panel: GPU/CPU, ambient, sky, gain, haze, bloom) |
 | F5 | temperature view (hot pixels also glow in the normal view) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
@@ -87,6 +97,8 @@ Controls:
 | Tab or F1 | hide the panels |
 | `L` / F7 | play scene with the player / spawn (or remove) a player at the cursor in any scene |
 | F2 / `T` | creative mode on/off / slow motion |
+| `O` | the streamed procedural world (World panel: window, sleeping chunks, mass, save/load) |
+| F8 / F9 | save the world to `notita_world.sav` / load it (world scene) |
 
 With a player in the world the keys change (the Player panel lists them too):
 
@@ -118,11 +130,16 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   Particle.h, Particles.*  phase 4 momentum particles (splashes, blast debris, shoved pixels)
   Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter, buoyancy
   Player.*      phase 5 player: capsule movement, damage, inventory, dig/place and the movement tools
+  WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y)
+  ChunkCodec.*  phase 6 palette + RLE byte-plane encoding of chunk cells and gas cells
+  Streamer.*    phase 6 awake window, chunk sleep/wake with every subsystem, save files
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
 src/app/      SDL3 window, GPU presentation, ImGui panels
   GpuGasSolver.*, shaders/gas.hlsl   the gas grid math as SDL3 GPU compute kernels
+  GpuLight.*, AppLight.cpp, shaders/light.hlsl   phase 6 lighting: GPU pass, its inputs, panel, self-test
+src/light/    CPU reference of the light pass (no SDL; the tests use it)
 src/bench/    headless benchmark
 tests/        unit tests (tiny built-in harness)
 data/materials.txt   material definitions (keys documented at the top)
@@ -307,6 +324,77 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   cooling brush that stops at -12 C, so water freezes into frost you can walk
   on (the sheet floats away as a body if it isn't held).
 
+## The streamed world and save files (phase 6)
+
+`--scene world` (or `O`) opens an endless world generated from the seed
+(`--seed N`). Every pixel is a pure function of (seed, x, y), so any chunk
+can be generated alone and borders always line up. Along x the surface rolls
+through three biomes: meadow (turf over loam), dunes (deep sand) and
+ashlands (cinder grit over basalt). Below is slate with iron veins, bedrock
+lumps deeper down and basalt below ~700 px. Caves are winding tunnels plus
+large caverns; cave space below the local water table is flooded, deep (or
+volcanic) caverns hold magma at 1300 C, some dry caves hold sparse hydrogen
+(shallow) or murk (deep), and lamp oil sits in pockets just above some water
+tables. Generated solids are pinned scene geometry (never rigid bodies);
+sand, grit and the liquids settle when a fresh chunk first runs.
+
+Streaming: the simulation runs on a fixed awake window of 16x8 chunks
+(1024x512 px, the same size the sandbox world always had) that follows the
+player, or the camera without one. When the focus drifts more than a chunk
+from the window centre, the window shifts: every chunk that leaves goes to
+sleep (its cells are encoded, and the gas grid cells over it, the splash
+particles flying in it and the rigid bodies whose centroid is in it go with
+it), the gas grid is re-based to the new window, and every chunk that enters
+comes back from the store exactly as it left (dirty rects and heat flags
+included) or is generated. Nothing in a sleeping chunk changes. Seams that
+were the old window's wall are woken so things flow across them. Generating,
+encoding and decoding run on the thread pool. Mass is exact through all of
+it: live (world + particles + bodies + grid + inventory) + sleeping, minus
+the terrain generated so far (the only source), never changes (tested every
+tick while the window moves, and in the benchmark).
+
+Encoding (ChunkCodec): the cells are split into byte planes (material via a
+per-chunk palette, shade stored relative to the generator's shade for that
+pixel, the four bytes of the temperature, velocity, flags, life, aux, stamp)
+and each plane is run-length coded. A generated chunk takes ~2.2 KB instead
+of 64 KiB. The gas cells (mass per species, heat, face velocities, pressure,
+obstacle map, sources) use the same scheme.
+
+Save files (F8 / F9, `--load path`): a versioned binary (`NOTITASV`, version
+1) with the material and gas species names (a changed materials.txt is
+remapped by name; missing materials load as air and are reported), the tick
+counters of every system, the grid's heat totals, the player and inventory,
+every chunk ever seen (sleeping ones as stored, awake ones encoded on the
+spot), the live particles and the bodies. Saving leaves the live world as it
+was, and loading continues bit for bit: a test runs the saved world and the
+loaded one side by side and compares them every tick. Writes go to a
+`.tmp` file first and then replace the save.
+
+## Lighting (phase 6)
+
+Emissive pixels light the world on the GPU, with soft shadows and bloom.
+Each frame the app packs three 8-bit inputs per view pixel: the albedo (the
+colour buffer as before), the emission with opacity in alpha, and how much
+sky reaches the top of each column. Emission comes from a material's
+`emissive = r, g, b` key (magma, flame, molten glass), a temperature glow
+above ~420 C (it replaced the old glow mix) and burning cells. Opacity comes
+from an `opacity` key or the kind (solids and powders 0.6, liquids 0.15,
+gases 0.03), plus gas in the grid by its concentration.
+
+The light field lives on 2x2 px cells with a 5-level mip chain. Every cell
+traces 32 cones whose step and mip level grow with distance (out to 192 px),
+so light falls off smoothly and shadows soften with distance; four rotated
+cone sets are blended by a 3x3 tent. Cones that leave the top of the view
+see the sky; open air is sky-lit while closed caves only get the ambient.
+The composite is albedo x (ambient + sky + light) + haze in air + emission +
+bloom (two blurred levels), written straight into the texture the renderer
+blits. `src/light` is the CPU reference with the same integer stepping;
+`--light-selftest` compares the two (max difference 1/255 per channel on this
+PC, ~1.2 ms per frame for the GPU pass at 640x360, plus ~1 ms to fill the
+inputs on the CPU). Without DXIL shaders it lights on the CPU at 4x4 px cells
+(~7 ms). Lighting is off in the temperature and velocity/pressure views.
+A `noise` key adds per-material hue jitter to the per-pixel shade.
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -369,3 +457,20 @@ walks back and forth, digs, jets and sets off a charge every 2 s:
 
 Most of it is the CPU gas solver (6.8 / 3.1 / 3.9 ms); the player itself is
 about 15 microseconds a tick. Phase 5 details are in the #471 note.
+
+Phase 6 row: the streamed world with everything on (16x8 awake chunks like
+the app, CPU gas solver on its 256x128 grid), the focus flying east at
+3 px/tick and diving 1 px/tick, so a column and a row of chunks go to sleep
+and are generated every ~40 ticks (21 shifts, 660 chunks generated in 900
+ticks); then a save and a load of everything:
+
+| scene | 1 thread | 4 threads | 16 threads | shift (16 thr) | save / load |
+| --- | --- | --- | --- | --- | --- |
+| world | 11.7 | 4.5 | 5.7 | 9.1 ms mean, 11.5 max | 3.9 MB, 25 / 150 ms |
+
+Mass stayed exact on every tick and through the save and load. The shift
+itself (encoding the chunks that leave, generating or decoding the ones that
+come in, on the thread pool) is the spike; a generated chunk takes ~1.2 ms on
+one thread and ~2.2 KB encoded. Walking speed (1.1 px/tick) shifts about
+once every one to two seconds. Earlier rows are unchanged within this PC's
+run-to-run noise. Phase 6 details are in the #472 note.
