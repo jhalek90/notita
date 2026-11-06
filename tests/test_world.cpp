@@ -460,6 +460,42 @@ TEST_CASE(world_stream_determinism_independent_of_thread_count) {
     CHECK_EQ(gasMass[0], gasMass[1]);
 }
 
+TEST_CASE(world_stream_body_on_the_window_edge_survives_shifts) {
+    // The window's edge is a wall for bodies (like for pixels); a body resting on it
+    // keeps its mass when the window moves on, and nothing stays outside the window.
+    Rig r(true);
+    r.stream->start(0, 3000); // deep underground
+    const int cx0 = r.stream->windowX(), cy0 = r.stream->windowY();
+    const int x0 = cx0 * kChunkSize + 200, yb = (cy0 + r.sp.chunksH) * kChunkSize; // the window's bottom edge
+    Rng rng(3);
+    scenes::fillRect(*r.world, kEmpty, x0 - 20, yb - 120, x0 + 20, yb - 1, rng);
+    scenes::fillRect(*r.world, r.mats.idOf("iron"), x0 - 5, yb - 110, x0 + 5, yb - 104, rng);
+    const long long m0 = r.conserved();
+    bool sawBody = false;
+    const float fx = static_cast<float>((cx0 + r.sp.chunksW / 2) * kChunkSize);
+    for (int t = 0; t < 240; ++t) {
+        r.tick();
+        r.stream->follow(fx, static_cast<float>((cy0 + r.sp.chunksH / 2) * kChunkSize));
+        sawBody = sawBody || !r.bodies->bodies().empty();
+        for (const RigidBody& body : r.bodies->bodies()) {
+            float bx, by;
+            BodySystem::centroid(body, bx, by);
+            CHECK(by < static_cast<float>(yb));
+        }
+    }
+    CHECK(sawBody);
+    CHECK_EQ(r.stream->stats().strays, 0);
+    CHECK_EQ(r.conserved(), m0);
+    // the window moves down and back up: the block (body or frozen pixels) keeps its mass
+    r.stream->shiftTo(cx0, cy0 + 2);
+    CHECK_EQ(r.conserved(), m0);
+    for (int i = 0; i < 60; ++i) r.tick();
+    r.stream->shiftTo(cx0, cy0);
+    CHECK_EQ(r.conserved(), m0);
+    for (int i = 0; i < 60; ++i) r.tick();
+    CHECK_EQ(r.conserved(), m0);
+}
+
 // ------------------------------------------------------------- saves
 
 TEST_CASE(world_save_load_continues_identically) {

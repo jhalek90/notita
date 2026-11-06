@@ -61,6 +61,7 @@ struct StreamParams {
 struct StreamStats {
     int shifts = 0;
     int generated = 0, woken = 0, slept = 0; // totals
+    int strays = 0;                   // bodies that fell out of the window and went to sleep where they are
     double lastShiftMs = 0.0;
     std::size_t storeBytes = 0;       // encoded size of the sleeping chunks
     std::size_t storeChunks = 0;
@@ -114,6 +115,8 @@ public:
 
 private:
     void sleepChunk(int cx, int cy, StoredChunk&& encoded);
+    StoredChunk& storeEntry(int cx, int cy); // a sleeping chunk's record, generated first if never seen
+    void sleepStrays();
     void wakeChunk(int cx, int cy, bool decoded);
     void parallel(int n, const std::function<void(int)>& fn);
     StoredChunk encodeLive(const Chunk& c, bool clearGas);

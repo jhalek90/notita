@@ -950,6 +950,30 @@ void BodySystem::extractIn(int x0, int y0, int x1, int y1, std::vector<BodyState
     }
 }
 
+bool BodySystem::anyOutside(int x0, int y0, int x1, int y1) const {
+    for (const RigidBody& b : bodies_) {
+        float cx, cy;
+        centroid(b, cx, cy);
+        if (cx < static_cast<float>(x0) || cy < static_cast<float>(y0) || cx >= static_cast<float>(x1) || cy >= static_cast<float>(y1))
+            return true;
+    }
+    return false;
+}
+
+void BodySystem::extractOutside(int x0, int y0, int x1, int y1, std::vector<BodyState>& out) {
+    for (std::size_t i = 0; i < bodies_.size();) {
+        float cx, cy;
+        centroid(bodies_[i], cx, cy);
+        const int ix = static_cast<int>(std::floor(cx)), iy = static_cast<int>(std::floor(cy));
+        if (ix < x0 || iy < y0 || ix >= x1 || iy >= y1) {
+            out.push_back(bodyState(bodies_[i]));
+            destroyBody(bodies_[i]);
+            continue;
+        }
+        ++i;
+    }
+}
+
 void BodySystem::snapshot(std::vector<BodyState>& out) const {
     for (const RigidBody& b : bodies_) out.push_back(bodyState(b));
 }

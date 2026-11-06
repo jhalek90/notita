@@ -137,7 +137,56 @@ void Streamer::start(int x, int y) {
     world_.wakeAll();
 }
 
+StoredChunk& Streamer::storeEntry(int cx, int cy) {
+    auto it = store_.find(chunkKey(cx, cy));
+    if (it != store_.end()) return it->second;
+    Chunk scratch;
+    scratch.coord = {cx, cy};
+    gen_.generate(scratch);
+    StoredChunk sc;
+    sc.cells = encodeCells(scratch);
+    sc.mass = cellsMass(scratch, mats_);
+    sc.next = {0, 0, kChunkMask, kChunkMask}; // fresh terrain settles when it wakes
+    sc.heatNext = true;
+    generatedMass_ += sc.mass;
+    storedMass_ += sc.mass;
+    stats_.storeBytes += sc.bytes();
+    ++stats_.generated;
+    return store_[chunkKey(cx, cy)] = std::move(sc);
+}
+
+// A body whose centroid left the window (nothing out there holds it up) goes to
+// sleep in the chunk it is in, and comes back when that chunk wakes.
+void Streamer::sleepStrays() {
+    const int x0 = wcx_ * kChunkSize, y0 = wcy_ * kChunkSize;
+    const int x1 = x0 + params_.chunksW * kChunkSize, y1 = y0 + params_.chunksH * kChunkSize;
+    if (!bodies_ || !bodies_->anyOutside(x0, y0, x1, y1)) return;
+    bodies_->unstampAll();
+    std::vector<BodyState> out;
+    bodies_->extractOutside(x0, y0, x1, y1, out);
+    for (BodyState& b : out) {
+        double sx = 0, sy = 0;
+        for (const BodyPixel& p : b.pixels) {
+            const float lx = static_cast<float>(p.lx) + 0.5f, ly = static_cast<float>(p.ly) + 0.5f;
+            sx += b.x + b.c * lx - b.s * ly;
+            sy += b.y + b.s * lx + b.c * ly;
+        }
+        const double n = static_cast<double>(std::max<std::size_t>(1, b.pixels.size()));
+        const int cx = floorDiv(static_cast<int>(std::floor(sx / n)), kChunkSize);
+        const int cy = floorDiv(static_cast<int>(std::floor(sy / n)), kChunkSize);
+        StoredChunk& sc = storeEntry(cx, cy);
+        const long long m = bodyMass(b, mats_);
+        sc.mass += m;
+        storedMass_ += m;
+        sc.bodies.push_back(std::move(b));
+        ++stats_.strays;
+    }
+    stats_.storeChunks = store_.size();
+    bodies_->restampAll();
+}
+
 bool Streamer::follow(float x, float y) {
+    sleepStrays();
     const int fcx = floorDiv(static_cast<int>(std::floor(x)), kChunkSize);
     const int fcy = floorDiv(static_cast<int>(std::floor(y)), kChunkSize);
     const int ccx = wcx_ + params_.chunksW / 2, ccy = wcy_ + params_.chunksH / 2;

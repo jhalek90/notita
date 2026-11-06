@@ -150,6 +150,9 @@ public:
     // Moves the bodies whose pixel centroid is inside [x0, x1) x [y0, y1) out
     // of the system (call after unstampAll). Ids are not kept.
     void extractIn(int x0, int y0, int x1, int y1, std::vector<BodyState>& out);
+    // The opposite: bodies whose centroid left the rect (fell out of the awake window).
+    void extractOutside(int x0, int y0, int x1, int y1, std::vector<BodyState>& out);
+    bool anyOutside(int x0, int y0, int x1, int y1) const;
     // Every body (for a save), without removing it (call after unstampAll).
     void snapshot(std::vector<BodyState>& out) const;
     int restore(const BodyState& st); // a new body (not stamped until restampAll / the next step)
