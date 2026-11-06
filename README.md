@@ -457,3 +457,20 @@ walks back and forth, digs, jets and sets off a charge every 2 s:
 
 Most of it is the CPU gas solver (6.8 / 3.1 / 3.9 ms); the player itself is
 about 15 microseconds a tick. Phase 5 details are in the #471 note.
+
+Phase 6 row: the streamed world with everything on (16x8 awake chunks like
+the app, CPU gas solver on its 256x128 grid), the focus flying east at
+3 px/tick and diving 1 px/tick, so a column and a row of chunks go to sleep
+and are generated every ~40 ticks (21 shifts, 660 chunks generated in 900
+ticks); then a save and a load of everything:
+
+| scene | 1 thread | 4 threads | 16 threads | shift (16 thr) | save / load |
+| --- | --- | --- | --- | --- | --- |
+| world | 11.7 | 4.5 | 5.7 | 9.1 ms mean, 11.5 max | 3.9 MB, 25 / 150 ms |
+
+Mass stayed exact on every tick and through the save and load. The shift
+itself (encoding the chunks that leave, generating or decoding the ones that
+come in, on the thread pool) is the spike; a generated chunk takes ~1.2 ms on
+one thread and ~2.2 KB encoded. Walking speed (1.1 px/tick) shifts about
+once every one to two seconds. Earlier rows are unchanged within this PC's
+run-to-run noise. Phase 6 details are in the #472 note.
