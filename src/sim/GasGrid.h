@@ -127,6 +127,7 @@ struct GasGridParams {
 
 struct GasGridStats {
     double solveMs = 0, coupleMs = 0;
+    double obstaclesMs = 0, pushMs = 0; // parts of coupleMs
     long long absorbed = 0;   // units taken in this tick (emissions + gas pixels)
     long long condensed = 0;  // pixels condensed back out this tick
     long long burned = 0;     // units burnt this tick
@@ -185,6 +186,18 @@ private:
     void buildSources();
     void pushPixels();
     Rng cellRng(int i, std::uint64_t salt) const;
+    // chunk table over the grid's area: pixel access and waking without hash lookups
+    void buildChunkTable();
+    Chunk* chunkAt(int x, int y) const {
+        const int cx = (x >> kChunkShift) - tcx0_, cy = (y >> kChunkShift) - tcy0_;
+        if (cx < 0 || cy < 0 || cx >= tcw_ || cy >= tch_) return nullptr;
+        return table_[static_cast<std::size_t>(cy) * tcw_ + cx];
+    }
+    Cell* px(int x, int y) const {
+        Chunk* c = chunkAt(x, y);
+        return c ? &c->at(x & kChunkMask, y & kChunkMask) : nullptr;
+    }
+    void wakePx(int x, int y) const; // like World::wake (3x3, motion + heat)
 
     World& world_;
     const MaterialRegistry& mats_;
@@ -199,6 +212,8 @@ private:
     CpuGasSolver cpu_;
     GasSolver* solver_ = &cpu_;
 
+    std::vector<Chunk*> table_;
+    int tcx0_ = 0, tcy0_ = 0, tcw_ = 0, tch_ = 0;
     std::vector<MaterialId> species_;
     std::vector<int> speciesIndex_; // by material id, -1 = not a grid gas
     std::vector<GasEmission> pending_;

@@ -1,4 +1,4 @@
-﻿#include "App.h"
+#include "App.h"
 
 #include "script/ReactionScript.h"
 #include "sim/Scenes.h"
@@ -63,6 +63,11 @@ bool App::init() {
     world_ = std::make_unique<World>(0, 0, kWorldChunksW, kWorldChunksH);
     pool_ = std::make_unique<ThreadPool>(opts_.threads);
     sim_ = std::make_unique<Simulator>(*world_, mats_, pool_.get(), opts_.seed, reactions_.get());
+    gas_ = std::make_unique<GasGrid>(*world_, mats_, pool_.get(), opts_.seed);
+    sim_->setGasExchange(gas_.get());
+    sim_->params().ambientRate = 0.0f; // the grid carries the air's heat (and loses some to the ambient)
+    gasView_ = opts_.gasView;
+    for (int k = 0; k < gas_->speciesCount(); ++k) gasColor_.push_back(mats_[gas_->species(k)].color);
     brush_.material = mats_.idOf("sand");
     brush_.radius = 6;
     loadScene(opts_.scene);
@@ -105,6 +110,19 @@ bool App::init() {
     if (!renderer_.init(device_, kViewW, kViewH)) {
         SDL_Log("renderer init failed: %s", SDL_GetError());
         return false;
+    }
+    {
+        gpuGas_ = std::make_unique<GpuGasSolver>();
+        const char* base = SDL_GetBasePath();
+        if (gpuGas_->init(device_, std::string(base ? base : "") + "shaders/")) {
+            if (!opts_.gasCpu) gas_->setSolver(gpuGas_.get());
+            SDL_Log("gas grid %dx%d: GPU solver ready%s", gas_->fields().w, gas_->fields().h, opts_.gasCpu ? " (using the CPU one, --gas-cpu)" : "");
+        } else {
+            gpuGasError_ = gpuGas_->error();
+            SDL_Log("gas grid: GPU solver unavailable (%s), using the CPU solver", gpuGasError_.c_str());
+            gpuGas_.reset();
+        }
+        useGpuGas_ = gpuGas_ && !opts_.gasCpu;
     }
 
     // ---- Dear ImGui ----
@@ -192,8 +210,10 @@ void App::loadScene(const std::string& name) {
     if (name == "churn") scenes::churn(*world_, mats_, opts_.seed);
     else if (name == "forge") scenes::forge(*world_, mats_, opts_.seed);
     else if (name == "thermal") scenes::thermalChurn(*world_, mats_, opts_.seed);
+    else if (name == "gas") scenes::gasLab(*world_, mats_, opts_.seed);
     else if (name == "empty") world_->clear();
     else scenes::demo(*world_, mats_, opts_.seed);
+    if (gas_) gas_->clear();
     camX_ = static_cast<float>(world_->minX() + (world_->widthPx() - kViewW) / 2);
     camY_ = static_cast<float>(world_->minY() + world_->heightPx() - kViewH);
 }
@@ -245,6 +265,13 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_F3) showChunks_ = !showChunks_;
         else if (k == SDLK_F4) showDirty_ = !showDirty_;
         else if (k == SDLK_F5) showTemp_ = !showTemp_;
+        else if (k == SDLK_F6) gasView_ = (gasView_ + 1) % 3;
+        else if (k == SDLK_G) gas_->params().enabled = !gas_->params().enabled;
+        else if (k == SDLK_V) loadScene("gas");
+        else if (k == SDLK_X) {
+            int bx, by;
+            if (screenToWorld(mouseX_, mouseY_, bx, by)) gas_->explode(bx, by, blastRadius_, blastPower_);
+        }
         else if (k == SDLK_H) brush_.mode = BrushMode::Heat;
         else if (k == SDLK_J) brush_.mode = BrushMode::Cool;
         else if (k == SDLK_P) brush_.mode = BrushMode::Place;
@@ -301,12 +328,12 @@ void App::stepSim(double frameDt) {
     ticksThisFrame_ = 0;
     if (paused_) {
         accumulator_ = 0.0;
-        while (stepRequests_ > 0) { sim_->tick(); --stepRequests_; ++ticksThisFrame_; }
+        while (stepRequests_ > 0) { tickSim(); --stepRequests_; ++ticksThisFrame_; }
     } else {
         accumulator_ += std::min(frameDt, 0.25) * speed_;
         constexpr int kMaxTicksPerFrame = 4; // don't spiral if a frame was slow
         while (accumulator_ >= kTickDt && ticksThisFrame_ < kMaxTicksPerFrame) {
-            sim_->tick();
+            tickSim();
             accumulator_ -= kTickDt;
             ++ticksThisFrame_;
         }
@@ -317,6 +344,12 @@ void App::stepSim(double frameDt) {
         tickHistory_[static_cast<std::size_t>(tickHistoryPos_)] = static_cast<float>(sim_->stats().tickMs);
         tickHistoryPos_ = (tickHistoryPos_ + 1) % static_cast<int>(tickHistory_.size());
     }
+}
+
+void App::tickSim() {
+    sim_->tick();
+    sim_->params().ambientRate = gas_->params().enabled ? 0.0f : sim_->params().ambientRate;
+    gas_->step();
 }
 
 void App::drawWorld() {
@@ -362,6 +395,65 @@ void App::drawWorld() {
                 }
             }
         }
+    drawGas();
+}
+
+void App::drawGas() {
+    if (!showGas_ || !gas_) return;
+    const GasFields& f = gas_->fields();
+    if (f.w <= 0) return;
+    auto& px = renderer_.pixels();
+    const int cx0 = static_cast<int>(camX_), cy0 = static_cast<int>(camY_);
+    const int gx0 = gas_->originX(), gy0 = gas_->originY();
+    const std::size_t n = f.cells();
+    for (int y = 0; y < kViewH; ++y) {
+        // bilinear in y and x over cell centres, so the gas has no 4x4 blocks
+        const float gy = (static_cast<float>(cy0 + y - gy0) + 0.5f) / kGasCell - 0.5f;
+        if (gy < -0.5f || gy > static_cast<float>(f.h) - 0.5f) continue;
+        const int j0 = std::clamp(static_cast<int>(std::floor(gy)), 0, f.h - 1), j1 = std::min(j0 + 1, f.h - 1);
+        const float fy = std::clamp(gy - static_cast<float>(j0), 0.0f, 1.0f);
+        std::uint32_t* row = &px[static_cast<std::size_t>(y) * kViewW];
+        for (int x = 0; x < kViewW; ++x) {
+            const float gx = (static_cast<float>(cx0 + x - gx0) + 0.5f) / kGasCell - 0.5f;
+            if (gx < -0.5f || gx > static_cast<float>(f.w) - 0.5f) continue;
+            const int i0 = std::clamp(static_cast<int>(std::floor(gx)), 0, f.w - 1), i1 = std::min(i0 + 1, f.w - 1);
+            const float fx = std::clamp(gx - static_cast<float>(i0), 0.0f, 1.0f);
+            const int c00 = j0 * f.w + i0, c10 = j0 * f.w + i1, c01 = j1 * f.w + i0, c11 = j1 * f.w + i1;
+            const float w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+            auto lerp = [&](auto get) { return get(c00) * w00 + get(c10) * w10 + get(c01) * w01 + get(c11) * w11; };
+            std::uint32_t& out = row[x];
+            if (gasView_ == 0) {
+                // each gas tints the pixel by its concentration (units per pixel)
+                for (int k = 0; k < f.species; ++k) {
+                    const float conc = lerp([&](int c) {
+                        return static_cast<float>(f.mass[static_cast<std::size_t>(k) * n + c]) / (kGasMassOne * kGasCellPx);
+                    });
+                    if (conc < 0.004f) continue;
+                    const std::uint32_t col = gasColor_[static_cast<std::size_t>(k)];
+                    const float a = std::min(1.0f, conc * 1.6f) * (0.35f + 0.65f * static_cast<float>(col >> 24) / 255.0f);
+                    out = mixColor(out, col | 0xFF000000u, static_cast<std::uint32_t>(a * 230.0f));
+                }
+            } else if (gasView_ == 1) {
+                // velocity: hue by direction, brightness by speed
+                const float u = lerp([&](int c) { return f.uc(c % f.w, c / f.w); });
+                const float v = lerp([&](int c) { return f.vc(c % f.w, c / f.w); });
+                const float sp = std::sqrt(u * u + v * v);
+                if (sp < 0.002f) continue;
+                const float a = std::atan2(v, u);
+                const auto ch = [&](float off) {
+                    return static_cast<std::uint32_t>(std::clamp(0.5f + 0.5f * std::cos(a - off), 0.0f, 1.0f) * 255.0f);
+                };
+                const std::uint32_t col = 0xFF000000u | ch(0.0f) | (ch(2.094f) << 8) | (ch(4.189f) << 16);
+                out = mixColor(out, col, static_cast<std::uint32_t>(std::min(1.0f, sp * 3.0f) * 220.0f));
+            } else {
+                // pressure: red above zero, blue below
+                const float p = lerp([&](int c) { return f.open[c] > 0.0f ? f.p[c] : 0.0f; });
+                const float a = std::min(1.0f, std::abs(p) * 0.5f);
+                if (a < 0.01f) continue;
+                out = mixColor(out, p > 0 ? 0xFF3040F0u : 0xFFF07030u, static_cast<std::uint32_t>(a * 220.0f));
+            }
+        }
+    }
 }
 
 void App::drawOverlays(const Viewport& vp) {
@@ -468,9 +560,13 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Full churn (B)")) loadScene("churn");
     ImGui::SameLine();
+    if (ImGui::Button("Gas lab (V)")) loadScene("gas");
+    ImGui::SameLine();
     if (ImGui::Button("Clear (C)")) world_->clear();
     ImGui::PopItemWidth();
     ImGui::End();
+
+    drawGasUi();
 
     // debug overlay
     const ImGuiIO& io = ImGui::GetIO();
@@ -502,6 +598,94 @@ void App::drawUi() {
     }
     if (!materialErrors_.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%zu material/reaction error(s), see log", materialErrors_.size());
     ImGui::End();
+}
+
+void App::drawGasUi() {
+    GasGridParams& gp = gas_->params();
+    GasSolveParams& sp = gas_->solveParams();
+    const GasGridStats& gs = gas_->stats();
+    ImGui::SetNextWindowPos(ImVec2(10, 640), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Gas grid", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
+    ImGui::Checkbox("Gas grid on (G)", &gp.enabled);
+    ImGui::SameLine();
+    ImGui::Checkbox("Show gas", &showGas_);
+    if (gpuGas_) {
+        if (ImGui::Checkbox("GPU solver", &useGpuGas_)) gas_->setSolver(useGpuGas_ ? gpuGas_.get() : nullptr);
+    } else {
+        ImGui::TextDisabled("GPU solver unavailable: %s", gpuGasError_.c_str());
+    }
+    ImGui::Combo("View (F6)", &gasView_, "Gas\0Velocity\0Pressure\0");
+    ImGui::SliderInt("Pressure iterations", &sp.pressureIters, 4, 120);
+    ImGui::SliderFloat("Heat buoyancy", &sp.buoyancyHeat, 0.0f, 0.004f, "%.4f");
+    ImGui::SliderFloat("Gas buoyancy", &sp.buoyancyDensity, 0.0f, 0.05f, "%.3f");
+    ImGui::SliderFloat("Vorticity", &sp.vorticity, 0.0f, 0.5f, "%.2f");
+    ImGui::SliderFloat("Damping", &sp.damping, 0.95f, 1.0f, "%.3f");
+    ImGui::SliderFloat("Air exchange", &gp.airExchange, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Loss to ambient", &gp.ambientLoss, 0.0f, 0.02f, "%.4f");
+    ImGui::SliderFloat("Push on pixels", &gp.push, 0.0f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Blast power", &blastPower_, 0.2f, 4.0f, "%.1f");
+    ImGui::SliderInt("Blast radius", &blastRadius_, 4, 40);
+    ImGui::TextDisabled("X: blast at the cursor");
+    double grams = static_cast<double>(gas_->massFixed()) / kGasMassOne;
+    ImGui::Text("%s solver %.2f ms (%s), coupling %.2f ms", gas_->solver().name(), gs.solveMs,
+                gpuGas_ && useGpuGas_ ? "upload+kernels+download" : "threads", gs.coupleMs);
+    ImGui::Text("grid %dx%d, %.0f mass units of gas", gas_->fields().w, gas_->fields().h, grams);
+    ImGui::Text("max speed %.2f px/tick, max |p| %.2f", gs.maxSpeed * kGasCell, gs.maxPressure);
+    ImGui::Text("in %lld, condensed %lld, burnt %lld, pushed %d px", gs.absorbed, gs.condensed, gs.burned, gs.pushed);
+    int wx, wy;
+    if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
+        const int i = (wx - gas_->originX()) / kGasCell, j = (wy - gas_->originY()) / kGasCell;
+        const GasFields& f = gas_->fields();
+        if (i >= 0 && j >= 0 && i < f.w && j < f.h) {
+            const int c = j * f.w + i;
+            ImGui::Text("cell (%d, %d): %.0f C, p %.3f, v (%.2f, %.2f)", i, j, gas_->temperature(c), f.p[c], f.uc(i, j), f.vc(i, j));
+            for (int k = 0; k < f.species; ++k)
+                if (f.m(k, c) > 0) ImGui::Text("  %s %.2f", mats_[gas_->species(k)].label.c_str(), static_cast<double>(f.m(k, c)) / kGasMassOne);
+        }
+    }
+    ImGui::PopItemWidth();
+    ImGui::End();
+}
+
+int App::gasSelfTest() {
+    // The same grid state through both solvers: mass must match exactly
+    // (both keep it), velocities and heat to float precision.
+    if (!gpuGas_) {
+        SDL_Log("gas self-test: no GPU solver (%s)", gpuGasError_.c_str());
+        return 2;
+    }
+    loadScene("gas");
+    gas_->setSolver(nullptr);
+    for (int t = 0; t < 240; ++t) tickSim(); // get some gas moving on the CPU
+    gas_->explode(350, world_->minY() + world_->heightPx() - 80, 16, 2.0f);
+    tickSim();
+    GasFields a = gas_->fields();
+    GasFields b = a;
+    CpuGasSolver cpu(pool_.get());
+    const GasSolveParams sp = gas_->solveParams();
+    auto total = [](const GasFields& f) { long long s = 0; for (int m : f.mass) s += m; return s; };
+    const long long m0 = total(a);
+    double gpuMs = 0;
+    const int steps = 30;
+    for (int s = 0; s < steps; ++s) {
+        cpu.solve(a, sp);
+        gpuGas_->solve(b, sp);
+        gpuMs += gpuGas_->lastMs();
+    }
+    double du = 0, dh = 0, maxU = 0, maxH = 0;
+    for (std::size_t i = 0; i < a.u.size(); ++i) { du = std::max(du, static_cast<double>(std::abs(a.u[i] - b.u[i]))); maxU = std::max(maxU, static_cast<double>(std::abs(a.u[i]))); }
+    for (std::size_t i = 0; i < a.heat.size(); ++i) { dh = std::max(dh, static_cast<double>(std::abs(a.heat[i] - b.heat[i]))); maxH = std::max(maxH, static_cast<double>(std::abs(a.heat[i]))); }
+    long long dm = 0;
+    for (std::size_t i = 0; i < a.mass.size(); ++i) dm = std::max(dm, static_cast<long long>(std::abs(a.mass[i] - b.mass[i])));
+    const bool massKept = total(a) == m0 && total(b) == m0;
+    SDL_Log("gas self-test, grid %dx%d, %d species, %d steps from the same state:", a.w, a.h, a.species, steps);
+    SDL_Log("  mass total cpu %lld, gpu %lld, start %lld -> %s", total(a), total(b), m0, massKept ? "kept exactly" : "CHANGED");
+    SDL_Log("  max |u cpu - u gpu| %.2e (max |u| %.3f), max heat diff %.2e (max %.1f), max cell mass diff %lld", du, maxU, dh, maxH, dm);
+    SDL_Log("  gpu solve %.3f ms per step (upload + %d kernels + download)", gpuMs / steps, 7 + sp.pressureIters);
+    const bool close = du <= 0.02 * std::max(1.0, maxU) && dh <= 0.02 * std::max(1.0, maxH);
+    SDL_Log("  %s", massKept && close ? "PASS" : "FAIL");
+    return massKept && close ? 0 : 1;
 }
 
 bool App::writeScreenshot(const std::string& path) const {

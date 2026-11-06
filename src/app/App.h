@@ -1,8 +1,10 @@
-﻿#pragma once
+#pragma once
 // The sandbox app: window, input, fixed 60 Hz sim loop, brushes, rendering
 // and the ImGui panels (sandbox tools + debug overlay).
+#include "GpuGasSolver.h"
 #include "Renderer.h"
 #include "sim/Brush.h"
+#include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Reactions.h"
 #include "sim/Simulator.h"
@@ -25,6 +27,9 @@ struct AppOptions {
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
+    bool gasCpu = false;        // run the gas grid on the CPU solver even when the GPU one works
+    int  gasView = 0;           // 0 gas, 1 velocity, 2 pressure (F6 cycles)
+    bool gasSelfTest = false;   // compare the GPU and CPU gas solvers, print the result, exit
 };
 
 class App {
@@ -33,6 +38,7 @@ public:
     ~App();
     bool init();
     int run();
+    int gasSelfTest(); // 0 when the GPU solver matches the CPU reference
 
 private:
     static constexpr int kViewW = 640, kViewH = 360;
@@ -42,6 +48,9 @@ private:
     void handleEvent(const SDL_Event& e);
     void updateInput(float dt);
     void stepSim(double frameDt);
+    void tickSim();       // one sim tick plus one gas grid step
+    void drawGas();       // gas over the pixels, or the velocity / pressure view
+    void drawGasUi();
     void loadScene(const std::string& name);
     void drawWorld();
     void drawUi();
@@ -65,6 +74,15 @@ private:
     std::unique_ptr<World> world_;
     std::unique_ptr<ThreadPool> pool_;
     std::unique_ptr<Simulator> sim_;
+    std::unique_ptr<GasGrid> gas_;
+    std::unique_ptr<GpuGasSolver> gpuGas_; // null when the GPU path is unavailable
+    std::string gpuGasError_;
+    bool useGpuGas_ = true;
+    int  gasView_ = 0;          // 0 gas, 1 velocity, 2 pressure
+    bool showGas_ = true;
+    float blastPower_ = 1.5f;
+    int  blastRadius_ = 16;
+    std::vector<std::uint32_t> gasColor_; // per species, RGBA8
 
     // sim loop
     bool paused_ = false;

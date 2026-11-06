@@ -48,6 +48,29 @@ GasGrid::GasGrid(World& world, const MaterialRegistry& mats, ThreadPool* pool, s
     burnt_.assign(f_.cells(), 0);
 }
 
+void GasGrid::buildChunkTable() {
+    tcx0_ = ox_ >> kChunkShift;
+    tcy0_ = oy_ >> kChunkShift;
+    tcw_ = (f_.w * kGasCell + kChunkSize - 1) / kChunkSize;
+    tch_ = (f_.h * kGasCell + kChunkSize - 1) / kChunkSize;
+    table_.assign(static_cast<std::size_t>(tcw_) * tch_, nullptr);
+    for (int cy = 0; cy < tch_; ++cy)
+        for (int cx = 0; cx < tcw_; ++cx) table_[static_cast<std::size_t>(cy) * tcw_ + cx] = world_.chunk(tcx0_ + cx, tcy0_ + cy);
+}
+
+void GasGrid::wakePx(int x, int y) const {
+    const int x0 = x - 1, y0 = y - 1, x1 = x + 1, y1 = y + 1;
+    for (int cy = y0 >> kChunkShift; cy <= y1 >> kChunkShift; ++cy)
+        for (int cx = x0 >> kChunkShift; cx <= x1 >> kChunkShift; ++cx) {
+            Chunk* c = chunkAt(cx << kChunkShift, cy << kChunkShift);
+            if (!c) continue;
+            const int ox = cx * kChunkSize, oy = cy * kChunkSize;
+            c->nextRect.include(std::max(x0 - ox, 0), std::max(y0 - oy, 0), std::min(x1 - ox, kChunkMask),
+                                std::min(y1 - oy, kChunkMask));
+            c->heatNext.store(true, std::memory_order_relaxed);
+        }
+}
+
 Rng GasGrid::cellRng(int i, std::uint64_t salt) const {
     return Rng(Rng::hash(Rng::hash(seed_ ^ 0x6A5D39EAull, tick_ * 8 + salt), static_cast<std::uint64_t>(i)));
 }
@@ -108,7 +131,7 @@ void GasGrid::buildObstacles() {
         for (int i = 0; i < w; ++i) {
             const int c = j * w + i;
             const int x0 = ox_ + i * kGasCell;
-            Chunk* ch = world_.chunkAtPixel(x0, y0); // a 4x4 block never straddles a chunk
+            Chunk* ch = chunkAt(x0, y0); // a 4x4 block never straddles a chunk
             int open = 0;
             bool flame = false, loose = false;
             if (ch) {
@@ -127,7 +150,7 @@ void GasGrid::buildObstacles() {
                                 cell.material = kEmpty;
                                 cell.flags = 0;
                                 cell.life = 0;
-                                world_.wake(x0 + dx, y0 + dy);
+                                wakePx(x0 + dx, y0 + dy);
                             }
                         } else {
                             if (cell.flags & kFlagBurning) flame = true;
@@ -190,7 +213,7 @@ void GasGrid::exchangeHeat() {
             const int c = j * w + i;
             if (f_.open[c] <= 0.0f) continue;
             const int x0 = ox_ + i * kGasCell;
-            Chunk* ch = world_.chunkAtPixel(x0, y0);
+            Chunk* ch = chunkAt(x0, y0);
             if (!ch) continue;
             int n = 0;
             float sum = 0.0f;
@@ -281,13 +304,14 @@ void GasGrid::condense() {
                 for (int tries = 0; tries < 2 && f_.m(k, c) >= unit; ++tries) {
                     if (!rng.chance16(chance)) continue;
                     const int x = x0 + static_cast<int>(rng.below(kGasCell)), y = y0 + static_cast<int>(rng.below(kGasCell));
-                    Cell* cell = world_.cell(x, y);
+                    Cell* cell = px(x, y);
                     if (!cell || cell->material != kEmpty) continue;
                     const float eGas = unitCap * (tg - kAmbientTemp);
                     const float eAir = airCap * (cell->temperature - kAmbientTemp);
                     Cell nc = into.spawn(static_cast<std::uint8_t>(rng.below(256)));
                     nc.temperature = std::clamp(kAmbientTemp + (eGas + eAir + latent) / into.heatCapacity, kMinTemp, kMaxTemp);
-                    world_.setCell(x, y, nc);
+                    *cell = nc;
+                    wakePx(x, y);
                     f_.m(k, c) -= unit;
                     f_.heat[c] -= eGas;
                     latentHeat_ += latent;
@@ -331,7 +355,11 @@ void GasGrid::pushPixels() {
     const float thr = params_.pushThreshold;
     stats_.pushed = 0;
     if (params_.push <= 0.0f) return;
-    for (int j = 0; j < h; ++j)
+    // A row of cells touches its own block row, one block row up or down and
+    // one pixel past that, so rows four apart never share a pixel: four
+    // phases of parallel rows, same result for any thread count.
+    std::vector<int> pushedRow(static_cast<std::size_t>(h), 0);
+    auto row = [&](int j) {
         for (int i = 0; i < w; ++i) {
             const int c = j * w + i;
             if (f_.open[c] <= 0.0f) continue;
@@ -352,18 +380,26 @@ void GasGrid::pushPixels() {
                 for (int b = 0; b < spanX; ++b) {
                     const int x = dx > 0 ? x0 + spanX - 1 - b : x0 + b;
                     const int y = dy > 0 ? y0 + spanY - 1 - a : y0 + a;
-                    Cell* p = world_.cell(x, y);
+                    Cell* p = px(x, y);
                     if (!p || !looseKind(mats_[p->material].kind)) continue;
-                    Cell* t = world_.cell(x + dx, y + dy);
+                    Cell* t = px(x + dx, y + dy);
                     if (!t || !openKind(mats_[t->material].kind) || t->material != kEmpty) continue;
                     if (rng.unit() >= chance) continue;
                     std::swap(*p, *t);
                     t->vy = 0;
-                    world_.wake(x, y);
-                    world_.wake(x + dx, y + dy);
-                    ++stats_.pushed;
+                    wakePx(x, y);
+                    wakePx(x + dx, y + dy);
+                    ++pushedRow[static_cast<std::size_t>(j)];
                 }
         }
+    };
+    for (int phase = 0; phase < 4; ++phase) {
+        const int count = (h - phase + 3) / 4;
+        if (count <= 0) continue;
+        if (pool_) pool_->parallelFor(count, [&](int r) { row(phase + 4 * r); });
+        else for (int r = 0; r < count; ++r) row(phase + 4 * r);
+    }
+    for (int n : pushedRow) stats_.pushed += n;
 }
 
 void GasGrid::applyBlast(const Blast& b) {
@@ -394,15 +430,16 @@ void GasGrid::applyBlast(const Blast& b) {
 void GasGrid::explode(int x, int y, int radius, float power) {
     if (f_.w <= 0 || radius <= 0 || power <= 0.0f) return;
     blasts_.push_back({x, y, radius, power});
+    buildChunkTable();
     // throw the loose pixels in the radius outwards (outer ones first, so they make room)
     struct Px { int x, y; float d; };
     std::vector<Px> loose;
-    for (int py = y - radius; py <= y + radius; ++py)
-        for (int px = x - radius; px <= x + radius; ++px) {
-            const float d = std::sqrt(static_cast<float>((px - x) * (px - x) + (py - y) * (py - y)));
+    for (int qy = y - radius; qy <= y + radius; ++qy)
+        for (int qx = x - radius; qx <= x + radius; ++qx) {
+            const float d = std::sqrt(static_cast<float>((qx - x) * (qx - x) + (qy - y) * (qy - y)));
             if (d > static_cast<float>(radius)) continue;
-            const Cell* c = world_.cell(px, py);
-            if (c && looseKind(mats_[c->material].kind)) loose.push_back({px, py, d});
+            const Cell* c = px(qx, qy);
+            if (c && looseKind(mats_[c->material].kind)) loose.push_back({qx, qy, d});
         }
     std::stable_sort(loose.begin(), loose.end(), [](const Px& a, const Px& b) { return a.d > b.d; });
     for (const Px& p : loose) {
@@ -419,18 +456,18 @@ void GasGrid::explode(int x, int y, int radius, float power) {
         for (int s = 1; s <= steps; ++s) {
             const int tx = p.x + static_cast<int>(std::lround(nx * static_cast<float>(s)));
             const int ty = p.y + static_cast<int>(std::lround(ny * static_cast<float>(s)));
-            const Cell* t = world_.cell(tx, ty);
+            const Cell* t = px(tx, ty);
             if (!t) break;
             const MaterialKind k = mats_[t->material].kind;
             if (k == MaterialKind::Solid) break;
             if (t->material == kEmpty) { bx = tx; by = ty; }
         }
         if (bx == p.x && by == p.y) continue;
-        Cell* a = world_.cell(p.x, p.y);
-        Cell* b = world_.cell(bx, by);
+        Cell* a = px(p.x, p.y);
+        Cell* b = px(bx, by);
         std::swap(*a, *b);
-        world_.wake(p.x, p.y);
-        world_.wake(bx, by);
+        wakePx(p.x, p.y);
+        wakePx(bx, by);
     }
 }
 
@@ -438,11 +475,13 @@ void GasGrid::step() {
     if (!params_.enabled || f_.w <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     ++tick_;
+    buildChunkTable();
     stats_.absorbed = absorbedPending_;
     absorbedPending_ = 0;
     stats_.condensed = 0;
     stats_.burned = 0;
     buildObstacles();
+    stats_.obstaclesMs = msSince(t0);
     for (const Blast& b : blasts_) applyBlast(b);
     blasts_.clear();
     moveTrapped();
@@ -463,7 +502,9 @@ void GasGrid::step() {
     const auto t1 = std::chrono::steady_clock::now();
     solver_->solve(f_, sp_);
     stats_.solveMs = msSince(t1);
+    const auto t2 = std::chrono::steady_clock::now();
     pushPixels();
+    stats_.pushMs = msSince(t2);
     float ms = 0, mp = 0;
     for (int j = 0; j < f_.h; ++j)
         for (int i = 0; i < f_.w; ++i) {
