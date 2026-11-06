@@ -28,6 +28,7 @@ add_library(notita_sim STATIC
     src/sim/ThreadPool.cpp
     src/sim/Brush.cpp
     src/sim/Scenes.cpp
+    src/sim/Showcase.cpp
     src/sim/Reactions.cpp
     src/sim/GasGrid.cpp
     src/sim/GasSolverCpu.cpp
@@ -73,7 +74,7 @@ endif()
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
     target_sources(notita_tests PRIVATE tests/test_light.cpp)

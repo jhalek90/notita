@@ -22,6 +22,11 @@
 //            the app) with everything on, the focus flying right at 3 px/tick
 //            and diving 1 px/tick, so a column of chunks sleeps and one wakes
 //            (or is generated) every ~21 ticks; then a save and a load
+//   showcase: the showcase building over the streamed world (16x8 window,
+//            everything on incl. electricity): the focus flies east at 2 px/tick
+//            from the cave through every ground-floor room to the course, and
+//            every switch in the window closes at tick 60 (furnace fuse, gas
+//            chamber fuse, heater, electrolysis); then a save and a load
 //   electric: large wired areas on a 16x8-chunk window (heat + reactions on,
 //            no gas grid): a copper mesh 860x400 px with heater and lamp
 //            segments between a column of volt cells and one of ground rods,
@@ -38,6 +43,7 @@
 #include "sim/Bodies.h"
 #include "sim/Electric.h"
 #include "sim/Particles.h"
+#include "sim/Showcase.h"
 #include "sim/Player.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
@@ -51,6 +57,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -202,9 +209,10 @@ struct WorldResult {
     int shifts = 0, generated = 0, woken = 0;
     double storeKiB = 0, saveKiB = 0, saveMs = 0, loadMs = 0;
     bool massOk = true;
+    double elecMs = 0, lit = 0;
 };
 
-WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reactions, int threads, int ticks) {
+WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reactions, int threads, int ticks, bool showcase = false) {
     using clock = std::chrono::steady_clock;
     auto ms = [](clock::time_point a, clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     StreamParams sp; // 16 x 8, the app's window
@@ -224,8 +232,17 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     Streamer stream(world, mats, gen, sp);
     stream.attach(&sim, &grid, &particles, &bodies);
     stream.setPool(&pool);
-    float fx = 0.0f, fy = static_cast<float>(gen.surfaceY(0));
-    stream.start(0, static_cast<int>(fy));
+    // the showcase row: the building laid over the generator, electricity on
+    std::unique_ptr<Showcase> show;
+    std::unique_ptr<ElectricSystem> elec;
+    if (showcase) {
+        show = std::make_unique<Showcase>(mats);
+        gen.setOverlay(show.get());
+        elec = std::make_unique<ElectricSystem>(world, mats, &pool, 2026);
+        stream.setElectric(elec.get());
+    }
+    float fx = showcase ? -900.0f : 0.0f, fy = showcase ? -60.0f : static_cast<float>(gen.surfaceY(0));
+    stream.start(static_cast<int>(fx), static_cast<int>(fy));
     auto conserved = [&] {
         const long long px = world.totalMass(mats) + particles.totalMass() + bodies.totalMass() + stream.storedMass() -
                              stream.generatedMass();
@@ -237,6 +254,17 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     for (int i = 0; i < ticks; ++i) {
         const auto t0 = clock::now();
         sim.tick();
+        if (elec) {
+            if (i == 60) {
+                const MaterialId open = mats.idOf("switch_open");
+                for (int y = world.minY(); y < world.minY() + world.heightPx(); ++y)
+                    for (int x = world.minX(); x < world.minX() + world.widthPx(); ++x)
+                        if (open != kEmpty && world.material(x, y) == open) elec->toggleSwitch(x, y, 0);
+            }
+            elec->step();
+            r.elecMs += elec->stats().ms;
+            r.lit += elec->stats().lit;
+        }
         bodies.step();
         particles.step();
         grid.step();
@@ -248,8 +276,11 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
         r.bodies += bodies.stats().bodies;
         r.particles += static_cast<double>(particles.count());
         r.active += sim.stats().activeChunks;
-        fx += 3.0f;
-        fy += 1.0f;
+        if (showcase) fx += 2.0f;
+        else {
+            fx += 3.0f;
+            fy += 1.0f;
+        }
         const int before = stream.stats().shifts;
         stream.follow(fx, fy);
         if (stream.stats().shifts != before) {
@@ -288,6 +319,8 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     r.findMs /= ticks;
     r.bodies /= ticks;
     r.particles /= ticks;
+    r.elecMs /= ticks;
+    r.lit /= ticks;
     r.generated = stream.stats().generated;
     r.woken = stream.stats().woken;
     r.storeKiB = static_cast<double>(stream.stats().storeBytes) / 1024.0;
@@ -415,8 +448,9 @@ int main(int argc, char** argv) {
     const bool playOnly = std::getenv("NOTITA_BENCH_PLAY_ONLY") != nullptr;
     const bool worldOnly = std::getenv("NOTITA_BENCH_WORLD_ONLY") != nullptr;
     const bool electricOnly = std::getenv("NOTITA_BENCH_ELECTRIC_ONLY") != nullptr;
+    const bool showcaseOnly = std::getenv("NOTITA_BENCH_SHOWCASE_ONLY") != nullptr;
     for (const Row& row : rows) {
-        if (worldOnly || electricOnly) break;
+        if (worldOnly || electricOnly || showcaseOnly) break;
         if (gasOnly && !row.gas) continue;
         if (p4Only && !row.phase4) continue;
         if (playOnly && row.scene != Scene::Play) continue;
@@ -437,7 +471,7 @@ int main(int argc, char** argv) {
     std::printf("\n%-11s %7s %8s %8s %8s %9s %9s %9s %8s %8s %8s %8s %8s %5s\n", "electric", "threads", "mean ms", "p95 ms",
                 "max ms", "elec ms", "elec p95", "elec max", "sim ms", "live px", "CG it", "settling", "splits", "mass");
     for (int t : threadCounts) {
-        if (worldOnly) break;
+        if (worldOnly || showcaseOnly) break;
         const ElectricResult e = runElectric(mats, reactions, t, ticks);
         std::printf("%-11s %7d %8.3f %8.3f %8.3f %9.3f %9.3f %9.3f %8.3f %8.0f %8.1f %8.2f %8lld %5s\n", "electric", t, e.mean, e.p95,
                     e.max, e.elecMean, e.elecP95, e.elecMax, e.simMs, e.nodes, e.iterations, e.unsettled, e.splits,
@@ -448,6 +482,7 @@ int main(int argc, char** argv) {
     std::printf("\n%-11s %7s %8s %8s %8s %7s %9s %9s %8s %9s %8s %9s %5s\n", "world", "threads", "mean ms", "p95 ms", "max ms",
                 "shifts", "shift ms", "shift max", "gen/wake", "store KiB", "save KiB", "save/load", "mass");
     for (int t : threadCounts) {
+        if (showcaseOnly) break;
         const WorldResult w = runWorld(mats, reactions, t, ticks);
         std::printf("%-11s %7d %8.3f %8.3f %8.3f %7d %9.2f %9.2f %4d/%-3d %9.0f %8.0f %4.0f/%-4.0f %5s\n", "world", t, w.mean, w.p95,
                     w.max, w.shifts, w.shiftMs, w.shiftMax, w.generated, w.woken, w.storeKiB, w.saveKiB, w.saveMs, w.loadMs,
@@ -456,6 +491,16 @@ int main(int argc, char** argv) {
                     "", w.simMs, w.active, w.gridMs, w.p4Ms);
         std::printf("%-11s   bodies %.3f ms (clump search %.3f, %.1f bodies), %.0f particles alive\n", "", w.bodyMs, w.findMs,
                     w.bodies, w.particles);
+    }
+    std::printf("\n%-11s %7s %8s %8s %8s %7s %9s %9s %8s %8s %9s %8s %9s %5s\n", "showcase", "threads", "mean ms", "p95 ms", "max ms",
+                "shifts", "shift ms", "shift max", "elec ms", "lit px", "store KiB", "save KiB", "save/load", "mass");
+    for (int t : threadCounts) {
+        const WorldResult w = runWorld(mats, reactions, t, ticks, true);
+        std::printf("%-11s %7d %8.3f %8.3f %8.3f %7d %9.2f %9.2f %8.3f %8.0f %9.0f %8.0f %4.0f/%-4.0f %5s\n", "showcase", t, w.mean, w.p95,
+                    w.max, w.shifts, w.shiftMs, w.shiftMax, w.elecMs, w.lit, w.storeKiB, w.saveKiB, w.saveMs, w.loadMs,
+                    w.massOk ? "exact" : "DRIFT");
+        std::printf("%-11s   of which sim %.3f ms (%.1f of 128 chunks moving), grid %.3f ms (CPU solver), particles+bodies %.3f ms (%.1f bodies)\n",
+                    "", w.simMs, w.active, w.gridMs, w.p4Ms, w.bodies);
     }
     std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"
                 "ignitions, burn-outs and reactions per tick; grid ms = gas grid step (CPU solver, 160x96 cells,\n"

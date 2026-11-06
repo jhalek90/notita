@@ -358,6 +358,8 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
         w.u32(static_cast<std::uint32_t>(strikes.size()));
         for (const ElectricStrike& st : strikes) { w.i32(st.x); w.i32(st.y); }
     }
+    // v3: the generator's overlay
+    w.str(gen_.overlay() ? gen_.overlay()->name() : "");
 
     // player + inventory
     w.u8(extras.hasPlayer ? 1 : 0);
@@ -472,6 +474,9 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
             strikes.push_back(st);
         }
     }
+    // v3: the generator's overlay (older saves: none)
+    const std::string overlay = version >= 3 ? r.str() : std::string();
+    if (!r.ok()) return fail("truncated save");
 
     extras = SaveExtras{};
     extras.hasPlayer = r.u8() != 0;
@@ -546,6 +551,13 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
     if (!r.ok() || nb > 4096) return fail("bad body count");
     for (std::uint32_t q = 0; q < nb; ++q) liveBodies.push_back(readBody(r, remap));
     if (!r.ok()) return fail("truncated save");
+
+    // the generator must match the save's before any chunk is generated
+    {
+        auto current = [&] { return std::string(gen_.overlay() ? gen_.overlay()->name() : ""); };
+        if (overlay != current() && overlayHook_ && !overlayHook_(overlay)) return fail("save needs a world overlay this build doesn't have");
+        if (overlay != current()) return fail("save was made with another world overlay");
+    }
 
     // replace the world
     reset(wcx, wcy);           // empty window, grid at its origin, store forgotten
