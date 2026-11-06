@@ -38,6 +38,9 @@
 #   anchor          solids: holds everything connected to it in place (bedrock)
 #   rigid           solids: false keeps the material static even when unsupported (default true)
 #   friction, bounce  Box2D surface values of a body made of it (default 0.6, 0.05)
+# Phase 5:
+#   hardness        how slowly the player digs it (dig chance per tick = 1 / (1 + 2 * hardness));
+#                   default: solids density / 1000, powders and liquids 0
 # Unknown keys are kept for later phases.
 
 [bedrock]

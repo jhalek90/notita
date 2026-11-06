@@ -11,8 +11,12 @@ flow on a velocity/pressure grid (GPU compute, with a CPU reference), with
 buoyancy, convection, burning gas and explosions. Phase 4 adds splash
 particles (liquids hit hard fly as momentum particles and settle back),
 miscible liquids that blend, and rigid bodies: unsupported clumps of solid
-pixels become Box2D bodies that fall, tumble and shatter. The full plan lives
-in Corvid note N249.
+pixels become Box2D bodies that fall, tumble and shatter. Phase 5 adds the
+player: a 20 px capsule that walks, jumps, swims and glides through the
+pixel world, digs material into an inventory and places it back, with a
+creative mode and movement tools that all act through the sim (a jet that
+puts real gas into the grid, a grapple, blast jumps, rafts that float by
+density, freezing water to walk on). The full plan lives in Corvid note N249.
 
 ## Build (Windows, MSVC)
 
@@ -48,6 +52,8 @@ build\notita.exe --scene churn    :: whole world full of moving material
 build\notita.exe --scene thermal  :: churn with hot and cold materials mixed in
 build\notita.exe --scene gas      :: gas lab: boiling pot, chimney, hydrogen cave, heavy gas
 build\notita.exe --scene quarry   :: phase 4: waterfall, blending liquids, blocks on a burning post, a boulder
+build\notita.exe --scene play     :: phase 5: the player in a playground (hill, lake, rafts, cliff, updraft, quickmetal tub)
+build\notita.exe --autoplay       :: the play scene with the player driven through a short demo
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita_tests.exe            :: unit tests (optional name filter as arg)
@@ -79,6 +85,22 @@ Controls:
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
 | `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
 | Tab or F1 | hide the panels |
+| `L` / F7 | play scene with the player / spawn (or remove) a player at the cursor in any scene |
+| F2 / `T` | creative mode on/off / slow motion |
+
+With a player in the world the keys change (the Player panel lists them too):
+
+| Input | Action |
+| --- | --- |
+| `A` `D` | walk (steps up ledges of 4 px) |
+| `W` / Space | jump; swim up in liquid; reel the rope in; hold while falling to glide |
+| `S` | swim down; let the rope out |
+| `1`-`6` | tool: dig, jet, grapple, blast, raft, freeze |
+| Left mouse | use the tool towards the cursor (within reach) |
+| Right mouse | place the material in hand with the brush |
+| Wheel (Shift+wheel = size) | material in hand; `[` `]` brush size |
+| `Z` | placed solids fixed (scene geometry) or loose (they can fall as bodies) |
+| `P` | pause (Space jumps) |
 
 ## Layout
 
@@ -94,7 +116,8 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   GasGrid.*     phase 3 gas grid: fields, pixel coupling, explosions
   GasSolverCpu.cpp  the grid math on the CPU (reference for the GPU kernels)
   Particle.h, Particles.*  phase 4 momentum particles (splashes, blast debris, shoved pixels)
-  Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter
+  Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter, buoyancy
+  Player.*      phase 5 player: capsule movement, damage, inventory, dig/place and the movement tools
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
@@ -245,6 +268,45 @@ data/reactions.luau  reaction table (A + B -> products + heat)
   pixels. `World::totalMass` skips body stamps, so world + particles + bodies
   is the conserved sum (tested every tick in the phase 4 tests).
 
+## The player, inventory and movement tools (phase 5)
+
+- **Movement.** The player is a 7x20 px capsule that is not stamped into the
+  grid: it moves through it on its own, colliding with solid and powder
+  pixels (rigid-body stamps included) in pixel steps, and walks up ledges of
+  up to 4 px. It floats by the density of the liquid around it (900 vs water
+  1000: head out; it sinks in lamp oil), with drag in liquid. The gas grid's
+  wind and pressure gradient over the cells it covers push it, so blasts,
+  jets and drafts move it; holding jump while falling spreads the cloak (much
+  more vertical drag), which lets a gentle updraft carry it. Standing on a
+  rigid body carries it along and presses on the body with its weight.
+  Damage: hot or cold pixels around it (past 70 C or below -30 C), flames and
+  burning pixels, and landings faster than 6.5 px/tick; it regenerates after
+  2 s without damage and respawns at its spawn point.
+- **Dig and place.** Digging removes pixels under the brush (solids by
+  hardness, from `hardness` in the material data or the density; anchors and
+  body stamps can't be dug) and counts them in the inventory per material.
+  Placing puts inventory material back into air cells (never inside the
+  player). Play mode has a capacity and counts everything, so world +
+  particles + bodies + gas grid + inventory mass stays exactly constant
+  (tested every tick with every system on). Creative mode (F2) has every
+  material without limit, like the sandbox brushes.
+- **Tools, all through the sim.** Jet: a liquid from the inventory is boiled
+  (water into steam) or a fuel burnt (lamp oil into smoke) and goes into the
+  gas grid at the nozzle with a velocity kick (`GasGrid::jet`, the same
+  intake as the sim's emissions, so mass is exact); the recoil pushes the
+  player the other way, and the jet blows dust and smoke around. Grapple: a
+  rope to the first solid pixel along the aim; it follows and pulls on a
+  rigid body it hooks, and comes loose when its pixel is dug, melts or burns.
+  Blast: a charge set off through the explosion path (`blastAt`: the gas
+  grid's blast, the bodies' kick and the player's own kick; the `X` key uses
+  the same function), so a blast at the feet is an explosive jump that also
+  throws the ground as particles. Raft: a 48x6 block of the solid in hand,
+  cut loose as a rigid body; bodies now float by density (Archimedes on the
+  pixels under the pool surface beside them, at their centroid, with drag),
+  so timber floats on water and even slate floats on quickmetal. Freeze: a
+  cooling brush that stops at -12 C, so water freezes into frost you can walk
+  on (the sheet floats away as a body if it isn't held).
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -297,3 +359,13 @@ and iron pixels in the random mix turning into (tiny) bodies: most of its
 body time is the clump search over 60 active chunks. "flip+p4" is flip with
 splashes on: every liquid landing hard splashes, and the particle step costs
 almost nothing. Phase 4 details are in the #470 note.
+
+Phase 5 row: the playground with everything on and a scripted player that
+walks back and forth, digs, jets and sets off a charge every 2 s:
+
+| scene | 1 thread | 4 threads | 16 threads | player step |
+| --- | --- | --- | --- | --- |
+| play | 8.1 | 4.1 | 4.9 | 0.015 ms |
+
+Most of it is the CPU gas solver (6.8 / 3.1 / 3.9 ms); the player itself is
+about 15 microseconds a tick. Phase 5 details are in the #471 note.
