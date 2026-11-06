@@ -83,6 +83,19 @@ struct Material {
     // ---- special: flames ----
     int lifeMin = 12, lifeMax = 30; // flame lifetime in ticks
 
+    // ---- phase 4: liquids and rigid bodies ----
+    // Liquids listed here blend with this one (random interdiffusion, no
+    // density layering) instead of layering. Symmetric after resolve().
+    std::vector<std::string> miscibleNames;
+    std::vector<MaterialId>  miscibleWith;
+    // Solids: an anchor holds everything connected to it in place (bedrock);
+    // a clump of solid pixels with no anchor and nothing under it becomes a
+    // rigid body. rigid = false keeps a solid static no matter what.
+    bool anchor = false;
+    bool rigid = true;
+    float friction = 0.6f;        // Box2D surface friction of a body made of it
+    float bounce = 0.05f;         // Box2D restitution
+
     std::uint32_t color = 0xFF000000; // RGBA8 in memory order (0xAABBGGRR as an int)
     int           colorVariation = 0; // +- per channel range used with Cell::shade
 
@@ -121,6 +134,12 @@ public:
     static MaterialRegistry loadDefault(std::vector<std::string>* errors = nullptr);
 
     const Material& operator[](MaterialId id) const { return materials_[id]; }
+    // Do these two liquids blend (symmetric)?
+    bool miscible(MaterialId a, MaterialId b) const {
+        const std::size_t n = materials_.size();
+        return a < n && b < n && miscible_[a * n + b] != 0;
+    }
+    const std::vector<std::uint8_t>& miscibleTable() const { return miscible_; } // size() * size()
     const Material* find(std::string_view name) const;
     MaterialId idOf(std::string_view name) const; // kEmpty when unknown
     std::size_t size() const { return materials_.size(); }
@@ -132,6 +151,7 @@ private:
     void resolve(std::vector<std::string>* errors, bool& ok);
     std::vector<Material> materials_;
     std::unordered_map<std::string, MaterialId> byName_;
+    std::vector<std::uint8_t> miscible_;
 };
 
 } // namespace notita

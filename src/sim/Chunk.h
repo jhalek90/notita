@@ -3,6 +3,7 @@
 // passes), sleeping (dirty rects) and, later, streaming and saving.
 #include "Cell.h"
 #include "GasExchange.h"
+#include "Particle.h"
 
 #include <algorithm>
 #include <atomic>
@@ -85,6 +86,8 @@ struct Chunk {
     std::atomic<bool> heatNext{false};
     std::vector<GasEmission> gasOut;      // gas handed to the GasExchange this tick
     double ambientEnergy = 0.0;           // energy air cells lost to the ambient this tick
+    std::vector<Particle> particlesOut;   // pixels that left the grid as splash particles this tick (phase 4)
+    double splashIn = 0.0, splashOut = 0.0; // |momentum| of the impacts that splashed / handed to the ejecta
 
     Chunk() = default;
     Chunk(const Chunk&) = delete;

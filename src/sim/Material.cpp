@@ -59,6 +59,13 @@ bool parseColor(std::string_view v, std::uint32_t& out) {
     return true;
 }
 
+bool parseBool(std::string_view v, bool& out) {
+    if (v == "true" || v == "yes" || v == "1" || v == "on") out = true;
+    else if (v == "false" || v == "no" || v == "0" || v == "off") out = false;
+    else return false;
+    return true;
+}
+
 bool parseKind(std::string_view v, MaterialKind& k) {
     if (v == "solid") k = MaterialKind::Solid;
     else if (v == "powder") k = MaterialKind::Powder;
@@ -390,6 +397,7 @@ MaterialRegistry::MaterialRegistry() {
     buildPalette(air);
     materials_.push_back(air);
     byName_["air"] = kEmpty;
+    miscible_.assign(1, 0);
 }
 
 const Material* MaterialRegistry::find(std::string_view name) const {
@@ -530,6 +538,21 @@ bool MaterialRegistry::loadFromString(std::string_view text, std::vector<std::st
         else if (key == "flame") cur.flameName = std::string(val);
         else if (key == "life_min") good = parseInt(val, cur.lifeMin);
         else if (key == "life_max") good = parseInt(val, cur.lifeMax);
+        else if (key == "miscible") {
+            cur.miscibleNames.clear();
+            std::string_view rest = val;
+            while (!rest.empty()) {
+                const auto comma = rest.find(',');
+                const std::string_view item = trim(rest.substr(0, comma));
+                if (!item.empty()) cur.miscibleNames.emplace_back(item);
+                if (comma == std::string_view::npos) break;
+                rest.remove_prefix(comma + 1);
+            }
+        }
+        else if (key == "anchor") good = parseBool(val, cur.anchor);
+        else if (key == "rigid") good = parseBool(val, cur.rigid);
+        else if (key == "friction") good = parseFloat(val, cur.friction);
+        else if (key == "bounce") good = parseFloat(val, cur.bounce);
         else if (key == "color") good = parseColor(val, cur.color);
         else if (key == "color_variation") good = parseInt(val, cur.colorVariation);
         else cur.extra[key] = std::string(val);
@@ -582,6 +605,27 @@ void MaterialRegistry::resolve(std::vector<std::string>* errors, bool& ok) {
             if (const Material* f = find(m.flameName); f && f->kind == MaterialKind::Special) m.flame = f->id;
         }
     }
+    // miscibility: liquids only, symmetric
+    const std::size_t n = materials_.size();
+    miscible_.assign(n * n, 0);
+    for (Material& m : materials_) {
+        m.miscibleWith.clear();
+        for (const std::string& name : m.miscibleNames) {
+            const auto it = byName_.find(name);
+            if (it == byName_.end()) { fail(m, "miscible with '" + name + "', which is not a material"); continue; }
+            const Material& o = materials_[it->second];
+            if (m.kind != MaterialKind::Liquid || o.kind != MaterialKind::Liquid) {
+                fail(m, "miscible with '" + name + "': only liquids blend");
+                continue;
+            }
+            if (o.id == m.id) continue;
+            miscible_[static_cast<std::size_t>(m.id) * n + o.id] = 1;
+            miscible_[static_cast<std::size_t>(o.id) * n + m.id] = 1;
+        }
+    }
+    for (Material& m : materials_)
+        for (std::size_t j = 0; j < n; ++j)
+            if (miscible_[static_cast<std::size_t>(m.id) * n + j]) m.miscibleWith.push_back(static_cast<MaterialId>(j));
 }
 
 bool MaterialRegistry::loadFromFile(const std::string& path, std::vector<std::string>* errors) {

@@ -104,6 +104,7 @@ void World::clear() {
         c->heatNext.store(false, std::memory_order_relaxed);
         c->heatActive = false;
         c->gasOut.clear();
+        c->particlesOut.clear();
     }
 }
 
@@ -115,6 +116,7 @@ int World::beginTick() {
         c->cellsProcessed = 0;
         c->events = 0;
         c->ambientEnergy = 0.0;
+        c->splashIn = c->splashOut = 0.0;
         if (!c->rect.empty()) ++active;
     }
     return active;
@@ -144,7 +146,8 @@ std::uint64_t World::hash() const {
 long long World::totalMass(const MaterialRegistry& mats) const {
     long long n = 0;
     for (const Chunk* c : list_)
-        for (const Cell& cell : c->cells) n += mats[cell.material].mass;
+        for (const Cell& cell : c->cells)
+            if (!(cell.flags & kFlagBody)) n += mats[cell.material].mass; // body pixels are counted by the BodySystem
     return n;
 }
 
