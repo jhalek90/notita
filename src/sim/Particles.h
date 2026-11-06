@@ -62,6 +62,11 @@ public:
     // One tick: move everything, then settle what stopped (serial, index order).
     void step();
     void clear() { particles_.clear(); }
+    // Phase 6 (streaming): moves the particles inside the pixel rect [x0, x1) x [y0, y1)
+    // to out (in index order), so a chunk going to sleep takes its flying pixels along.
+    void extractIn(int x0, int y0, int x1, int y1, std::vector<Particle>& out);
+    std::uint64_t tickCount() const { return tick_; }
+    void setTickCount(std::uint64_t t) { tick_ = t; }
 
     const std::vector<Particle>& particles() const { return particles_; }
     std::size_t count() const { return particles_.size(); }

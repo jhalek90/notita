@@ -644,4 +644,29 @@ void blastAt(GasGrid* gas, BodySystem* bodies, Player* player, int x, int y, int
     if (player) player->explode(x, y, radius, power);
 }
 
+PlayerState Player::state() const {
+    PlayerState st;
+    st.x = x_; st.y = y_; st.vx = vx_; st.vy = vy_;
+    st.spawnX = spawnX_; st.spawnY = spawnY_; st.health = health_;
+    st.tick = tick_;
+    st.airTicks = airTicks_; st.sinceHurt = sinceHurt_; st.facing = facing_;
+    st.grounded = grounded_; st.stuck = stuck_; st.ignorePowder = ignorePowder_;
+    st.wasJump = wasJump_; st.gliding = gliding_;
+    st.rope = rope_ && ropeBody_ == 0;
+    st.ropeX = ropeX_; st.ropeY = ropeY_; st.ropeLen = ropeLen_;
+    return st;
+}
+
+void Player::setState(const PlayerState& st) {
+    x_ = st.x; y_ = st.y; vx_ = st.vx; vy_ = st.vy;
+    spawnX_ = st.spawnX; spawnY_ = st.spawnY; health_ = st.health;
+    tick_ = st.tick;
+    airTicks_ = st.airTicks; sinceHurt_ = st.sinceHurt; facing_ = st.facing;
+    grounded_ = st.grounded; stuck_ = st.stuck; ignorePowder_ = st.ignorePowder;
+    wasJump_ = st.wasJump; gliding_ = st.gliding;
+    rope_ = st.rope; ropeBody_ = 0;
+    ropeX_ = st.ropeX; ropeY_ = st.ropeY; ropeLen_ = st.ropeLen;
+    groundBody_ = 0;
+}
+
 } // namespace notita

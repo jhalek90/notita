@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <type_traits>
 
 namespace notita {
 
@@ -122,6 +123,129 @@ void GasGrid::clear() {
     std::fill(extraSrc_.begin(), extraSrc_.end(), 0.0f);
     std::fill(burnt_.begin(), burnt_.end(), std::uint8_t{0});
     blasts_.clear();
+}
+
+// --------------------------------------------------------------------------
+// phase 6: streaming
+
+std::int64_t GasGrid::ChunkCells::massFixed() const {
+    std::int64_t s = 0;
+    for (std::int32_t m : mass) s += m;
+    return s;
+}
+
+bool GasGrid::exportChunk(int cx, int cy, ChunkCells& out, bool clear) {
+    constexpr int S = kChunkCellsSide;
+    const int i0 = (cx * kChunkSize - ox_) / kGasCell, j0 = (cy * kChunkSize - oy_) / kGasCell;
+    if (i0 < 0 || j0 < 0 || i0 + S > f_.w || j0 + S > f_.h) return false;
+    const int ns = speciesCount();
+    out.species = ns;
+    out.mass.assign(static_cast<std::size_t>(ns) * S * S, 0);
+    out.heat.assign(S * S, 0.0f);
+    out.u.assign(S * S, 0.0f);
+    out.v.assign(S * S, 0.0f);
+    out.p.assign(S * S, 0.0f);
+    out.extra.assign(S * S, 0.0f);
+    out.open.assign(S * S, 0.0f);
+    out.src.assign(S * S, 0.0f);
+    out.burnt.assign(S * S, 0);
+    const int w = f_.w;
+    for (int j = 0; j < S; ++j)
+        for (int i = 0; i < S; ++i) {
+            const int c = (j0 + j) * w + (i0 + i), l = j * S + i;
+            for (int k = 0; k < ns; ++k) out.mass[static_cast<std::size_t>(k) * S * S + l] = f_.m(k, c);
+            out.heat[l] = f_.heat[c];
+            out.u[l] = f_.u[(j0 + j) * (w + 1) + i0 + i];
+            out.v[l] = f_.v[c];
+            out.p[l] = f_.p[c];
+            out.extra[l] = extraSrc_[c];
+            out.open[l] = f_.open[c];
+            out.src[l] = f_.src[c];
+            out.burnt[l] = burnt_[c];
+            if (clear) {
+                for (int k = 0; k < ns; ++k) f_.m(k, c) = 0;
+                f_.heat[c] = 0.0f;
+                f_.u[(j0 + j) * (w + 1) + i0 + i] = 0.0f;
+                f_.v[c] = 0.0f;
+                f_.p[c] = 0.0f;
+                extraSrc_[c] = 0.0f;
+                burnt_[c] = 0;
+            }
+        }
+    return true;
+}
+
+bool GasGrid::importChunk(int cx, int cy, const ChunkCells& in) {
+    constexpr int S = kChunkCellsSide;
+    const int i0 = (cx * kChunkSize - ox_) / kGasCell, j0 = (cy * kChunkSize - oy_) / kGasCell;
+    if (i0 < 0 || j0 < 0 || i0 + S > f_.w || j0 + S > f_.h || in.empty()) return false;
+    const int ns = std::min(in.species, speciesCount());
+    const int w = f_.w;
+    for (int j = 0; j < S; ++j)
+        for (int i = 0; i < S; ++i) {
+            const int c = (j0 + j) * w + (i0 + i), l = j * S + i;
+            for (int k = 0; k < ns; ++k) f_.m(k, c) += in.mass[static_cast<std::size_t>(k) * S * S + l];
+            f_.heat[c] += in.heat[l];
+            f_.u[(j0 + j) * (w + 1) + i0 + i] = in.u[l];
+            f_.v[c] = in.v[l];
+            f_.p[c] = in.p[l];
+            extraSrc_[c] = in.extra[l];
+            if (!in.open.empty()) f_.open[c] = in.open[l];
+            if (!in.src.empty()) f_.src[c] = in.src[l];
+            burnt_[c] = in.burnt[l];
+        }
+    return true;
+}
+
+std::int64_t GasGrid::rebase(int originX, int originY) {
+    const int di = (originX - ox_) / kGasCell, dj = (originY - oy_) / kGasCell;
+    if (di == 0 && dj == 0) return 0;
+    const int w = f_.w, h = f_.h, ns = speciesCount();
+    const std::size_t n = f_.cells();
+    std::int64_t dropped = massFixed();
+    auto shiftCells = [&](auto& a, std::size_t planes) {
+        using T = typename std::decay_t<decltype(a)>::value_type;
+        std::vector<T> b(a.size(), T{});
+        for (std::size_t k = 0; k < planes; ++k)
+            for (int j = 0; j < h; ++j) {
+                const int sj = j + dj;
+                if (sj < 0 || sj >= h) continue;
+                for (int i = 0; i < w; ++i) {
+                    const int si = i + di;
+                    if (si < 0 || si >= w) continue;
+                    b[k * n + static_cast<std::size_t>(j) * w + i] = a[k * n + static_cast<std::size_t>(sj) * w + si];
+                }
+            }
+        a.swap(b);
+    };
+    shiftCells(f_.mass, static_cast<std::size_t>(ns));
+    shiftCells(f_.heat, 1);
+    shiftCells(f_.p, 1);
+    shiftCells(f_.open, 1);
+    shiftCells(f_.src, 1);
+    shiftCells(extraSrc_, 1);
+    shiftCells(burnt_, 1);
+    shiftCells(flameIn_, 1);
+    shiftCells(loose_, 1);
+    {   // faces: u is (w+1) x h, v is w x (h+1); the outer faces are walls
+        std::vector<float> u2(f_.u.size(), 0.0f), v2(f_.v.size(), 0.0f);
+        for (int j = 0; j < h; ++j)
+            for (int i = 1; i < w; ++i) {
+                const int si = i + di, sj = j + dj;
+                if (si >= 1 && si < w && sj >= 0 && sj < h) u2[static_cast<std::size_t>(j) * (w + 1) + i] = f_.u[static_cast<std::size_t>(sj) * (w + 1) + si];
+            }
+        for (int j = 1; j < h; ++j)
+            for (int i = 0; i < w; ++i) {
+                const int si = i + di, sj = j + dj;
+                if (si >= 0 && si < w && sj >= 1 && sj < h) v2[static_cast<std::size_t>(j) * w + i] = f_.v[static_cast<std::size_t>(sj) * w + si];
+            }
+        f_.u.swap(u2);
+        f_.v.swap(v2);
+    }
+    ox_ = originX;
+    oy_ = originY;
+    dropped -= massFixed();
+    return dropped;
 }
 
 // --------------------------------------------------------------------------

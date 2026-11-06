@@ -1,5 +1,7 @@
 #include "Simulator.h"
 
+#include "Bodies.h" // kAuxSettled
+
 #include "Particles.h"
 #include "Rng.h"
 
@@ -526,6 +528,7 @@ private:
             cell->life = 0;
             cell->vx = cell->vy = 0;
             cell->stamp = stamp_;
+            if (mats_[m].kind == MaterialKind::Solid) cell->aux = kAuxSettled; // as for state changes
             handOverGas(x, y, *cell);
             wake(x, y);
         };
@@ -555,6 +558,9 @@ private:
         c.flags = 0;
         c.life = 0;
         c.stamp = stamp_;
+        // a solid that froze (or set) in place counts as put down by physics: it only
+        // becomes a rigid body when nothing holds it up (a magma crust stays on its cave)
+        if (mats_[into].kind == MaterialKind::Solid) c.aux = kAuxSettled;
         ++events_;
         handOverGas(x, y, c);
         wake(x, y);

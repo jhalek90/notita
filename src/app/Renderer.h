@@ -29,14 +29,20 @@ public:
     Viewport fit(std::uint32_t tw, std::uint32_t th) const;
 
     // Records upload + blit into cmd. Call before the UI render pass.
+    // upload = false: a GPU pass (the lighting composite) already wrote the texture.
     void record(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* target, std::uint32_t tw, std::uint32_t th,
-                const Viewport& vp);
+                const Viewport& vp, bool upload = true);
+
+    // The view texture; compute shaders may write it when storageWritable().
+    SDL_GPUTexture* texture() const { return texture_; }
+    bool storageWritable() const { return storage_; }
 
 private:
     SDL_GPUDevice* device_ = nullptr;
     SDL_GPUTexture* texture_ = nullptr;
     SDL_GPUTransferBuffer* upload_ = nullptr;
     int width_ = 0, height_ = 0;
+    bool storage_ = false;
     std::vector<std::uint32_t> pixels_;
 };
 

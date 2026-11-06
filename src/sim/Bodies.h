@@ -74,6 +74,14 @@ struct RigidBody {
     }
 };
 
+// Phase 6: what a body keeps while its chunk sleeps or sits in a save file.
+struct BodyState {
+    std::vector<BodyPixel> pixels;
+    float x = 0, y = 0, c = 1, s = 0, vx = 0, vy = 0, w = 0;
+    int cooldown = 0, asleep = 0;
+    bool floats = false;
+};
+
 struct BodyParams {
     bool  enabled = true;
     int   checkInterval = 2;     // ticks between clump searches
@@ -133,6 +141,24 @@ public:
     // Impulse at a world point, in water-pixel masses * px/tick (one pixel of
     // density 1000 moving 1 px/tick has 1 unit of momentum).
     bool applyImpulse(int id, float wx, float wy, float ix, float iy);
+
+    // ---- phase 6: streaming and saves ----
+    // Takes every body's pixels out of the grid now (the next stamp puts them back).
+    void unstampAll();
+    // Writes every body back into the grid (after unstampAll and the chunk swap).
+    void restampAll();
+    // Moves the bodies whose pixel centroid is inside [x0, x1) x [y0, y1) out
+    // of the system (call after unstampAll). Ids are not kept.
+    void extractIn(int x0, int y0, int x1, int y1, std::vector<BodyState>& out);
+    // The opposite: bodies whose centroid left the rect (fell out of the awake window).
+    void extractOutside(int x0, int y0, int x1, int y1, std::vector<BodyState>& out);
+    bool anyOutside(int x0, int y0, int x1, int y1) const;
+    // Every body (for a save), without removing it (call after unstampAll).
+    void snapshot(std::vector<BodyState>& out) const;
+    int restore(const BodyState& st); // a new body (not stamped until restampAll / the next step)
+    std::uint64_t tickCount() const { return tick_; }
+    void setTickCount(std::uint64_t t) { tick_ = t; }
+    static void centroid(const RigidBody& b, float& cx, float& cy);
 
     const std::vector<RigidBody>& bodies() const { return bodies_; }
     BodyParams& params() { return params_; }
