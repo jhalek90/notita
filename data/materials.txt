@@ -274,6 +274,47 @@ color = #3b3533
 color_variation = 12
 noise = 0.05
 
+# showcase building (--scene showcase): cast concrete, furnace brick, sign lights
+[concrete]
+label = Concrete
+kind = solid
+density = 2400
+hardness = 3.0
+conductivity = 0.15
+heat_capacity = 1.1
+color = #8f8d87
+color_variation = 16
+noise = 0.03
+
+[firebrick]
+label = Firebrick
+kind = solid
+density = 2000
+hardness = 2.0
+conductivity = 0.05
+heat_capacity = 1.3
+color = #8e4430
+color_variation = 18
+noise = 0.06
+
+[sign_light]
+label = Sign light
+kind = solid
+density = 2200
+hardness = 1.0
+emissive = 0.25, 1.1, 1.3
+color = #7ff2ff
+color_variation = 6
+
+[sign_amber]
+label = Amber sign light
+kind = solid
+density = 2200
+hardness = 1.0
+emissive = 1.4, 0.8, 0.2
+color = #ffc65a
+color_variation = 6
+
 [molten_glass]
 kind = liquid
 density = 2400

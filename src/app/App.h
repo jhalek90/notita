@@ -14,6 +14,7 @@
 #include "sim/Particles.h"
 #include "sim/Player.h"
 #include "sim/Reactions.h"
+#include "sim/Showcase.h"
 #include "sim/Simulator.h"
 #include "sim/Streamer.h"
 #include "sim/WorldGen.h"
@@ -32,7 +33,7 @@ namespace notita {
 struct AppOptions {
     int  frames = 0;            // > 0: quit after this many frames (smoke runs)
     std::string screenshot;     // with frames: write the last view to this .bmp
-    std::string scene = "demo"; // demo | forge | churn | thermal | gas | quarry | play | empty
+    std::string scene = "showcase"; // showcase | world | demo | forge | churn | thermal | gas | quarry | play | circuits | empty
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
     bool tempView = false;      // start in the temperature view
@@ -48,6 +49,8 @@ struct AppOptions {
     bool oldLook = false;       // #477: start with liquids drawn as pixels (F10 flips)
     bool oldMotion = false;     // #477: start with the phase 1 powder / liquid rules (F10 flips)
     bool lockstep = false;      // exactly one sim tick per frame (comparable screenshots)
+    bool at = false;            // --at x,y: put the player (feet) there at start (screenshots of a room)
+    float atX = 0, atY = 0;
 };
 
 class App {
@@ -89,11 +92,14 @@ private:
     void drawElectricUi();
     void drawElectric();   // the current / potential overlay (M)
     void toggleSwitchAt(int x, int y);
+    void autoShowcase();   // --scene showcase --autoplay: closes the switches, logs stats (smoke runs)
     void autoCircuits();   // --scene circuits --autoplay: flips the switches, calls lightning (smoke runs)
     bool circuitsScene_ = false;
+    bool showcaseScene_ = false; // the streamed world with the showcase building laid over it
     int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();
+    void drawTitleCard(); // the game's name over the first seconds, fading out (panels hidden or not)
     void drawOverlays(const Viewport& vp);
     bool screenToWorld(float sx, float sy, int& wx, int& wy) const;
     bool writeScreenshot(const std::string& path) const;
@@ -123,6 +129,7 @@ private:
     bool particlesOn_ = true;
     std::unique_ptr<Player> player_;
     std::unique_ptr<WorldGen> gen_;
+    std::unique_ptr<Showcase> showcase_;
     std::unique_ptr<Streamer> stream_;
     bool streaming_ = false;     // the world scene: the window follows the player (or the camera)
     std::string savePath_ = "notita_world.sav";

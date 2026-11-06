@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Brand.h"
 
 #include "script/ReactionScript.h"
 #include "sim/Scenes.h"
@@ -84,6 +85,7 @@ bool App::init() {
     materialErrors_.insert(materialErrors_.end(), electric_->errors().begin(), electric_->errors().end());
     player_->setElectric(electric_.get());
     gen_ = std::make_unique<WorldGen>(mats_, opts_.seed);
+    showcase_ = std::make_unique<Showcase>(mats_);
     {
         StreamParams sp;
         sp.chunksW = kWorldChunksW;
@@ -92,6 +94,13 @@ bool App::init() {
         stream_->attach(sim_.get(), gas_.get(), particles_.get(), bodies_.get());
         stream_->setPool(pool_.get());
         stream_->setElectric(electric_.get());
+        // a save of the showcase brings the building back (the generator lays it over the terrain)
+        stream_->setOverlayHook([this](const std::string& name) {
+            if (name == showcase_->name()) gen_->setOverlay(showcase_.get());
+            else if (name.empty()) gen_->setOverlay(nullptr);
+            else return false;
+            return true;
+        });
     }
     if (!opts_.load.empty()) savePath_ = opts_.load;
     gasView_ = opts_.gasView;
@@ -99,17 +108,19 @@ bool App::init() {
     brush_.material = mats_.idOf("sand");
     brush_.radius = 6;
     loadScene(opts_.scene);
+    if (opts_.at) spawnPlayer(opts_.atX, opts_.atY, !playerOn_);
     showTemp_ = opts_.tempView;
     showElectric_ = opts_.electricView >= 0;
     electricView_ = std::max(0, opts_.electricView);
 
     // ---- window + GPU ----
+    SDL_SetAppMetadata(brand::kName, brand::kVersion, nullptr);
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
         return false;
     }
     const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    window_ = SDL_CreateWindow("Pixel sandbox (working title)", kViewW * 2, kViewH * 2,
+    window_ = SDL_CreateWindow(brand::kName, kViewW * 2, kViewH * 2,
                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
     if (!window_) {
         SDL_Log("SDL_CreateWindow failed: %s", SDL_GetError());
@@ -259,11 +270,12 @@ void App::buildHeatPalettes() {
 }
 
 void App::startWorld() {
-    const int sy = gen_->surfaceY(0);
-    stream_->start(0, sy);
+    float sx = 0.5f, sy = static_cast<float>(gen_->surfaceY(0));
+    if (gen_->overlay() == showcase_.get()) { sx = showcase_->spawnX(); sy = showcase_->spawnY(); }
+    stream_->start(static_cast<int>(std::floor(sx)), static_cast<int>(sy));
     streaming_ = true;
-    spawnPlayer(0.5f, static_cast<float>(sy), true);
-    player_->setSpawnPoint(0.5f, static_cast<float>(sy));
+    spawnPlayer(sx, sy, true);
+    player_->setSpawnPoint(sx, sy);
     if (opts_.autoplay) player_->inventory().capacity = 1LL << 40; // the smoke run digs a long tunnel
     worldMsg_.clear();
 }
@@ -276,7 +288,7 @@ void App::followWorld() {
 }
 
 bool App::saveWorld() {
-    if (!streaming_) { worldMsg_ = "save/load works in the world scene (O)"; return false; }
+    if (!streaming_) { worldMsg_ = "save/load works in the streamed scenes (O world, I showcase)"; return false; }
     SaveExtras ex;
     ex.hasPlayer = playerOn_;
     ex.player = player_->state();
@@ -304,6 +316,7 @@ bool App::loadWorld() {
         return false;
     }
     streaming_ = true;
+    showcaseScene_ = gen_->overlay() == showcase_.get();
     if (ex.hasPlayer) {
         player_->setState(ex.player);
         Inventory& inv = player_->inventory();
@@ -327,7 +340,13 @@ bool App::loadWorld() {
 }
 
 void App::loadScene(const std::string& name) {
-    if (name == "world") {
+    if (name == "world" || name == "showcase") {
+        if (particles_) particles_->clear();
+        if (bodies_) bodies_->clear();
+        if (electric_) electric_->clear();
+        gen_->setOverlay(name == "showcase" ? showcase_.get() : nullptr);
+        showcaseScene_ = name == "showcase";
+        circuitsScene_ = false;
         startWorld();
         if (!opts_.load.empty()) { loadWorld(); opts_.load.clear(); }
         return;
@@ -336,6 +355,7 @@ void App::loadScene(const std::string& name) {
         stream_->reset(0, 0); // back to the fixed sandbox world
         streaming_ = false;
     }
+    showcaseScene_ = false;
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
     if (electric_) electric_->clear();
@@ -393,6 +413,16 @@ void App::autoplay() {
     in.jump = in.down = in.use = in.place = false;
     in.aimX = px + 30.0f;
     in.aimY = py;
+    if (showcaseScene_) {
+        // --scene showcase --autoplay: walk east from the lobby, up the stairs, through the
+        // gallery and into the demolition hall, then dig on east (streaming as it goes).
+        // With --at the player stays put (screenshots of one room with its switches closed).
+        if (opts_.at) return;
+        in.move = 1.0f;
+        in.jump = f > 200 && f % 60 < 10;
+        if (f > 700) { in.tool = Tool::Dig; in.use = true; in.aimX = px + 12.0f; in.aimY = py; }
+        return;
+    }
     if (streaming_) {
         // --scene world --autoplay: walk east for good, digging through whatever is in the way
         // and hopping now and then, so the awake window keeps shifting (a streaming smoke run)
@@ -500,6 +530,7 @@ void App::handleEvent(const SDL_Event& e) {
         }
         if (k == SDLK_L) { loadScene("play"); break; }
         if (k == SDLK_O) { loadScene("world"); break; }
+        if (k == SDLK_I) { loadScene("showcase"); break; }
         if (k == SDLK_F8) { saveWorld(); break; }
         if (k == SDLK_F9) { loadWorld(); break; }
         if (k == SDLK_F2) { creative_ = !creative_; break; }
@@ -643,6 +674,7 @@ void App::stepSim(double frameDt) {
 
 void App::tickSim() {
     if (opts_.autoplay && circuitsScene_) autoCircuits();
+    if (opts_.autoplay && showcaseScene_) autoShowcase();
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->params().smoothPowder = smoothPowder_; // #477 old/new toggle (F10)
     sim_->params().calmLiquid = calmLiquid_;
@@ -821,8 +853,29 @@ void App::autoCircuits() {
     }
 }
 
+// --scene showcase --autoplay: every switch in the awake window closes at t=60
+// (furnace igniter, gas chamber fuse, heater, electrolysis, the shelf lamp);
+// stats every 120 ticks.
+void App::autoShowcase() {
+    const int t = circuitTick_++;
+    if (t == 60) {
+        const MaterialId open = mats_.idOf("switch_open");
+        for (int y = world_->minY(); y < world_->minY() + world_->heightPx(); ++y)
+            for (int x = world_->minX(); x < world_->minX() + world_->widthPx(); ++x)
+                if (world_->material(x, y) == open && open != kEmpty) electric_->toggleSwitch(x, y, 0);
+    }
+    if (t % 120 == 0 && t > 0) {
+        const ElectricStats& es = electric_->stats();
+        const BodyStats& bs = bodies_->stats();
+        SDL_Log("showcase t=%d: player (%.0f, %.0f), %d lamp px lit, %d circuits, power %.1f, sparks %d, splits %lld, bodies %d, "
+                "shifts %d, %zu asleep, electric %.2f ms",
+                t, static_cast<double>(player_->x()), static_cast<double>(player_->y()), es.lit, es.components, es.power, es.sparks,
+                es.splitsTotal, bs.bodies, stream_->stats().shifts, stream_->storedChunks(), es.ms);
+    }
+}
+
 void App::toggleSwitchAt(int x, int y) {
-    const int reach = playerOn_ ? static_cast<int>(player_->params().reach * 0.5f) : 12;
+    const int reach = playerOn_ ? static_cast<int>(player_->params().reach) : 12;
     const int n = electric_->toggleSwitch(x, y, reach);
     if (n > 0) SDL_Log("switch: %d px flipped", n);
 }
@@ -1001,7 +1054,10 @@ void App::drawUi() {
     const SimStats& st = sim_->stats();
 
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Sandbox", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    // "###Sandbox" keeps the window's ImGui id (and its saved place in imgui.ini)
+    char sandboxTitle[64];
+    std::snprintf(sandboxTitle, sizeof sandboxTitle, "%s: sandbox###Sandbox", brand::kName);
+    ImGui::Begin(sandboxTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
     ImGui::SeparatorText("Material");
     ImGui::BeginChild("##materials", ImVec2(ImGui::GetFontSize() * 15.0f, ImGui::GetFontSize() * 14.0f));
@@ -1076,6 +1132,8 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("World (O)")) loadScene("world");
     ImGui::SameLine();
+    if (ImGui::Button("Showcase (I)")) loadScene("showcase");
+    ImGui::SameLine();
     if (ImGui::Button("Circuits (U)")) loadScene("circuits");
     ImGui::SameLine();
     if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); electric_->clear(); }
@@ -1096,6 +1154,7 @@ void App::drawUi() {
     ImGui::SetNextWindowBgAlpha(0.6f);
     ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    ImGui::TextDisabled("%s %s, debug", brand::kName, brand::kVersion);
     float avg = 0, peak = 0;
     for (float v : tickHistory_) { avg += v; peak = std::max(peak, v); }
     avg /= static_cast<float>(tickHistory_.size());
@@ -1353,6 +1412,29 @@ bool App::writeScreenshot(const std::string& path) const {
     return static_cast<bool>(f);
 }
 
+void App::drawTitleCard() {
+    constexpr double kHold = 2.5, kFade = 1.0; // seconds
+    const double t = ImGui::GetTime();
+    if (t >= kHold + kFade) return;
+    const float a = t < kHold ? 1.0f : static_cast<float>(1.0 - (t - kHold) / kFade);
+    const ImGuiIO& io = ImGui::GetIO();
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float big = ImGui::GetFontSize() * 4.0f, small = ImGui::GetFontSize() * 1.3f;
+    const ImVec2 ts = font->CalcTextSizeA(big, FLT_MAX, 0.0f, brand::kName);
+    const ImVec2 ps = font->CalcTextSizeA(small, FLT_MAX, 0.0f, brand::kPitch);
+    const float cx = io.DisplaySize.x * 0.5f, cy = io.DisplaySize.y * 0.42f;
+    const float gap = small * 0.4f, pad = small * 1.2f;
+    const float top = cy - (ts.y + gap + ps.y) * 0.5f;
+    auto alpha = [&](float v) { return static_cast<int>(v * a); };
+    dl->AddRectFilled(ImVec2(0, top - pad), ImVec2(io.DisplaySize.x, top + ts.y + gap + ps.y + pad), IM_COL32(12, 10, 8, alpha(150)));
+    const ImVec2 tp(cx - ts.x * 0.5f, top), pp(cx - ps.x * 0.5f, top + ts.y + gap);
+    const float sh = std::max(2.0f, big * 0.04f);
+    dl->AddText(font, big, ImVec2(tp.x + sh, tp.y + sh), IM_COL32(40, 28, 16, alpha(220)), brand::kName);
+    dl->AddText(font, big, tp, IM_COL32(238, 214, 158, alpha(255)), brand::kName);
+    dl->AddText(font, small, pp, IM_COL32(220, 210, 190, alpha(230)), brand::kPitch);
+}
+
 int App::run() {
     auto last = std::chrono::steady_clock::now();
     int frame = 0;
@@ -1388,6 +1470,7 @@ int App::run() {
 
         drawOverlays(viewport_);
         drawUi();
+        drawTitleCard();
         ImGui::Render();
         ImDrawData* dd = ImGui::GetDrawData();
 
@@ -1436,6 +1519,13 @@ void App::drawWorldUi() {
     }
     const StreamStats& st = stream_->stats();
     const int fx = static_cast<int>(std::floor(playerOn_ ? player_->x() : camX_ + kViewW * 0.5f));
+    if (gen_->overlay() == showcase_.get()) {
+        const int fy = static_cast<int>(std::floor(playerOn_ ? player_->centreY() : camY_ + kViewH * 0.5f));
+        const char* here = "outside";
+        for (const Showcase::Room& r : showcase_->rooms())
+            if (fx >= r.x0 && fx <= r.x1 && fy >= r.y0 && fy <= r.y1) { here = r.name.c_str(); break; }
+        ImGui::Text("Showcase: %s   (I restarts it, F8/F9 save/load)", here);
+    }
     ImGui::Text("Seed %llu   biome %s   surface y %d", static_cast<unsigned long long>(gen_->seed()), biomeName(gen_->biome(fx)),
                 gen_->surfaceY(fx));
     ImGui::Text("Awake window: chunks (%d, %d) .. (%d, %d)", stream_->windowX(), stream_->windowY(),
@@ -1451,7 +1541,7 @@ void App::drawWorldUi() {
     if (ImGui::Button("Load (F9)")) loadWorld();
     ImGui::SameLine();
     if (ImGui::Button("New world")) startWorld();
-    ImGui::TextDisabled("%s", savePath_.c_str());
+    ImGui::TextDisabled("%s save: %s", brand::kName, savePath_.c_str());
     if (!worldMsg_.empty()) ImGui::TextWrapped("%s", worldMsg_.c_str());
     ImGui::End();
 }

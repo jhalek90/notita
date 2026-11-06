@@ -1,7 +1,11 @@
-# notita
+# Fine Grain
 
-A 2D pixel sandbox where every pixel is simulated. "notita" is the repo name;
-the game itself still needs its own name (the window says "working title").
+A 2D pixel sandbox where every grain is simulated: sand, water, fire, gas,
+heat, bodies and electricity, all on one living pixel grid.
+
+"notita" is still the repo, folder and build name (`notita.exe`,
+`notita_world.sav`); "Fine Grain" is the name the game shows (window title,
+title card, panels, the exe's version info).
 
 Phase 1 is the engine core: a chunked, multithreaded falling-sand
 simulation, data-driven materials, a GPU-presented 640x360 view and sandbox
@@ -50,7 +54,8 @@ generator needs CMake 4.2+.)
 ## Run
 
 ```bat
-build\notita.exe                  :: demo scene
+build\notita.exe                  :: the showcase building (default; same as --scene showcase)
+build\notita.exe --scene demo     :: the old demo scene
 build\notita.exe --scene forge    :: heat playground: magma, fire, etchant, frost
 build\notita.exe --scene churn    :: whole world full of moving material
 build\notita.exe --scene thermal  :: churn with hot and cold materials mixed in
@@ -63,6 +68,8 @@ build\notita.exe --load notita_world.sav   :: open a saved world (F8 saves, F9 l
 build\notita.exe --scene world --autoplay  :: the player walks east digging (a streaming smoke run)
 build\notita.exe --scene circuits          :: electricity: lamp, heater, brine tank, thermopile, plate, fuse, lightning mast
 build\notita.exe --scene circuits --autoplay :: closes every switch and calls lightning (an electricity smoke run)
+build\notita.exe --scene showcase --autoplay :: walks up to the gallery and the demolition hall, closes every switch in reach
+build\notita.exe --scene showcase --at 600,0 --autoplay :: stands in the furnace room and closes the switches (room screenshots)
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita.exe --light-selftest :: GPU light pass vs the CPU reference, prints PASS/FAIL
@@ -73,7 +80,8 @@ build\notita_bench.exe [ticks] [threads...]
 Other flags: `--threads N`, `--seed N`, `--frames N --screenshot out.bmp`, `--electric-view current|potential`
 (run N frames, save the sim view, quit: handy for smoke tests),
 `--gas-cpu` (gas grid on the CPU solver), `--gas-view gas|velocity|pressure`,
-`--light-cpu` (light pass on the CPU reference), `--no-light`.
+`--light-cpu` (light pass on the CPU reference), `--no-light`, `--at x,y` (start with the
+player's feet at x,y).
 
 Controls:
 
@@ -101,9 +109,10 @@ Controls:
 | `L` / F7 | play scene with the player / spawn (or remove) a player at the cursor in any scene |
 | F2 / `T` | creative mode on/off / slow motion |
 | `O` | the streamed procedural world (World panel: window, sleeping chunks, mass, save/load) |
-| F8 / F9 | save the world to `notita_world.sav` / load it (world scene) |
+| `I` | the showcase building (the World panel names the room you're in) |
+| F8 / F9 | save the world to `notita_world.sav` / load it (world and showcase scenes) |
 | `U` | circuits scene (Electricity panel: live pixels, power, lamps, sparks, solver, tuning) |
-| `E` | flip the switch under the cursor (with a player: the nearest one in reach) |
+| `E` | flip the switch under the cursor (with a player: the nearest one within tool reach, 56 px) |
 | `Y` | lightning down the cursor's column |
 | `M` | electricity overlay: current, then potential, then off |
 
@@ -137,7 +146,8 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   Particle.h, Particles.*  phase 4 momentum particles (splashes, blast debris, shoved pixels)
   Bodies.*      phase 4 rigid bodies on Box2D v3: clump search, stamping, terrain, shatter, buoyancy
   Player.*      phase 5 player: capsule movement, damage, inventory, dig/place and the movement tools
-  WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y)
+  WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y); WorldOverlay hook
+  Showcase.*    the showcase building: a WorldOverlay raster laid over the generated world
   ChunkCodec.*  phase 6 palette + RLE byte-plane encoding of chunk cells and gas cells
   Streamer.*    phase 6 awake window, chunk sleep/wake with every subsystem, save files
   Electric.*    electricity: potential solve over conductive pixels, heating, lamps, sparks, electrolysis, lightning
@@ -489,6 +499,62 @@ it is off in the temperature, gas and electricity views, and without the
 compiled shader (no dxc) liquids keep the smooth depth colours as pixels.
 `--old-look` / `--old-motion` start with the old drawing / rules.
 
+## The showcase building
+
+The default scene (`--scene showcase`, key `I`) is a cast-concrete building
+with timber girders, laid over the streamed procedural world, with one room
+per system. Every room is lit by real circuits (volt cell, copper, lamps in
+series, ground rod) and labelled with a sign in the slab above it.
+
+![The gas chamber just after its fuse lit the hydrogen, the gallery and the lobby](docs/showcase/gas.png)
+![The furnace burning down after its switch was closed, the electrical room beside it](docs/showcase/furnace.png)
+
+More shots: docs/showcase/lobby.png and power.png; any room with
+`notita --scene showcase --at x,y --frames 300 --screenshot out.bmp` (add
+`--autoplay` to close its switches first).
+
+```
+          SILO  |  GAS            |  GALLERY (sample jars) | DEMOLITION       | FLUE
+ cave   silo    |  FLUIDS         |  LOBBY (spawn, stairs) | POWER            | FIRE      course
+  (W)   + plate |  3 tanks, drain |                        | 4 circuits       | furnace   (E)
+                |  CISTERN below  |                        |                  |
+```
+
+- Lobby: the spawn point; a 27-step stair (4 px steps) up to the gallery. The
+  top of the stairwell is a 28 px gap: a running jump crosses it to the gallery's
+  west half (gas room), the top step leads east (demolition hall).
+- Gallery: glass jars of every liquid and powder on a timber shelf.
+- Silo: layered grit, rust salt and sand over a concrete hopper with a timber
+  gate; dig or burn the gate and it pours onto a pressure plate in the floor,
+  which lights a floor lamp.
+- Fluids: tanks of water, lamp oil and brine with timber bungs (dig them), a
+  basin of tincture, and a drain in the floor into the cistern below.
+- Power: a lamp behind a switch, a pressure plate flush with the floor and a
+  floor light, a brine tank with copper electrodes behind a switch
+  (hydrogen and oxygen bubble off) and a heater coil under a glass pot of water.
+- Fire: a firebrick furnace full of logs with air vents and a chimney (glass
+  through the flue room, a stack over the roof); the switch by the door feeds a
+  thin fuse wire between the logs that sparks and lights them, and the gas grid
+  pulls the smoke up the flue.
+- Gas: a sealed chamber with hydrogen under its roof, a fuse behind a switch
+  outside its door, a timber post up into the gas, and a loose iron blast door.
+- Demolition: a timber beam on a corbel and a column carrying loose blocks (a
+  boulder, a concrete block, an iron weight, a basalt ball) over a water tub,
+  and a three-tier stack of concrete slabs on timber props. The loose pieces are
+  settled pixels: cut what holds them and they fall as Box2D bodies.
+- Outside west: meadow, trees, a cave winding down to a cavern flooded to the
+  water table (with a work light and a pocket of lamp oil).
+- Outside east, the course: a jet tower with a beacon, a gantry with work
+  lights over a pond with two timber rafts (grapple from the gantry), stepping
+  pillars and a slate cliff.
+
+It's a `WorldOverlay` (src/sim/Showcase.*): a raster built once from paint
+calls, so every pixel stays a pure function of (x, y) like the generator's. The
+surface is flat at y 0 under the site and blends back into the generated hills
+over 220 px. Chunks stream, sleep and save like the rest of the world; save
+files (version 3) name the overlay, and loading a showcase save switches the
+generator back to it before anything new is generated.
+
 ## Benchmark
 
 `notita_bench` runs a 640x384 world (10x6 chunks) where ~70% of all pixels are
@@ -585,3 +651,16 @@ come in, on the thread pool) is the spike; a generated chunk takes ~1.2 ms on
 one thread and ~2.2 KB encoded. Walking speed (1.1 px/tick) shifts about
 once every one to two seconds. Earlier rows are unchanged within this PC's
 run-to-run noise. Phase 6 details are in the #472 note.
+
+Showcase row (`NOTITA_BENCH_SHOWCASE_ONLY=1 notita_bench 900`): the
+showcase over the streamed world with everything on, electricity included
+(CPU gas solver), the focus flying east at 2 px/tick from the cave through the
+ground floor to the course (14 shifts), every switch in the window closed at
+tick 60; then a save and a load:
+
+| scene | 1 thread | 4 threads | 16 threads | electric step (16 thr) | save / load |
+| --- | --- | --- | --- | --- | --- |
+| showcase | 25.5 | 7.5 | 7.2 | 0.97 ms (~765 lamp px lit) | 2.4 MB, 30 / 113 ms |
+
+Most of it is the CPU gas grid (5.4 ms at 16 threads; the app runs it on the
+GPU); the sim itself is 0.7 ms. Mass stayed exact. Details are in the #478 note.

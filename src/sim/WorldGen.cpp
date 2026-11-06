@@ -104,6 +104,7 @@ WorldGen::Column WorldGen::column(int x) const {
     float s = fbm1(fx / 420.0f, 3, kSurface) * params_.surfaceAmp + fbm1(fx / 70.0f, 2, kHills) * params_.hillAmp;
     if (c.biome == Biome::Dunes) s += 18.0f * std::sin(fx / 45.0f) * 0.5f; // dune ripples
     c.surface = static_cast<int>(std::floor(s));
+    if (overlay_) c.surface = overlay_->surface(x, c.surface);
     c.water = c.surface + params_.waterTable + static_cast<int>(fbm1(fx / 650.0f, 2, kWater) * params_.waterVariation);
     return c;
 }
@@ -118,7 +119,10 @@ Cell WorldGen::make(MaterialId m, int x, int y) const {
     return c;
 }
 
-Cell WorldGen::cellAt(int x, int y) const { return cellIn(column(x), x, y); }
+Cell WorldGen::cellAt(int x, int y) const {
+    if (Cell o; overlay_ && overlay_->cellAt(x, y, o)) return o;
+    return cellIn(column(x), x, y);
+}
 
 Cell WorldGen::cellIn(const Column& col, int x, int y) const {
     const int d = y - col.surface;
@@ -176,7 +180,8 @@ void WorldGen::generate(Chunk& chunk) const {
         const Column col = column(x);
         for (int ly = 0; ly < kChunkSize; ++ly) {
             const int y = oy + ly;
-            chunk.at(lx, ly) = y < col.surface ? Cell{} : cellIn(col, x, y);
+            if (Cell o; overlay_ && overlay_->cellAt(x, y, o)) chunk.at(lx, ly) = o;
+            else chunk.at(lx, ly) = y < col.surface ? Cell{} : cellIn(col, x, y);
         }
     }
 }

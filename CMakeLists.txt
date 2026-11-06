@@ -28,6 +28,7 @@ add_library(notita_sim STATIC
     src/sim/ThreadPool.cpp
     src/sim/Brush.cpp
     src/sim/Scenes.cpp
+    src/sim/Showcase.cpp
     src/sim/Reactions.cpp
     src/sim/GasGrid.cpp
     src/sim/GasSolverCpu.cpp
@@ -73,7 +74,7 @@ endif()
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
     target_sources(notita_tests PRIVATE tests/test_light.cpp)
@@ -94,6 +95,10 @@ if(NOTITA_BUILD_APP)
     # #477: the liquid surface pass (GpuLiquid + its App side)
     target_sources(notita PRIVATE src/app/GpuLiquid.cpp src/app/AppLiquid.cpp)
     target_link_libraries(notita PRIVATE notita_light)
+    # version info: the exe stays notita.exe but describes itself as Fine Grain
+    if(WIN32)
+        target_sources(notita PRIVATE src/app/notita.rc)
+    endif()
 
     # Gas grid compute kernels -> <build>/shaders/gas_<kernel>.dxil (next to the exe).
     # dxc ships with the Windows SDK; without it the app falls back to the CPU solver.

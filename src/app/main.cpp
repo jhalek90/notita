@@ -1,23 +1,27 @@
-// notita sandbox entry point.
-//   notita.exe [--scene demo|forge|churn|thermal|gas|quarry|play|empty] [--threads N] [--seed N]
+// Fine Grain (repo and exe: notita) entry point.
+//   notita.exe [--scene showcase|world|demo|forge|churn|thermal|gas|quarry|play|circuits|empty] [--threads N] [--seed N]
+//              (default: showcase, the concrete building over the streamed world)
 //              [--frames N [--screenshot out.bmp]] [--temp-view] [--electric-view current|potential]
 //              [--gas-cpu] [--gas-view gas|velocity|pressure] [--gas-selftest]
 //              [--scene world] [--load notita_world.sav]   (phase 6: the streamed world, F8 save / F9 load)
 //              [--autoplay]   (the play scene with the player driven through a short demo)
 //              [--no-light] [--light-cpu] [--light-selftest]
 //              [--old-look] [--old-motion] [--lockstep]   (#477: liquids as pixels / phase 1 powder and liquid rules; F10 flips)
+//              [--at x,y]     (start with the player's feet at x,y: screenshots of one room)
 #include <SDL3/SDL_main.h>
 
 #include "App.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 int main(int argc, char** argv) {
     notita::AppOptions opts;
+    bool sceneGiven = false;
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
-        if (!std::strcmp(argv[i], "--scene")) opts.scene = next();
+        if (!std::strcmp(argv[i], "--scene")) { opts.scene = next(); sceneGiven = true; }
         else if (!std::strcmp(argv[i], "--threads")) opts.threads = std::atoi(next());
         else if (!std::strcmp(argv[i], "--seed")) opts.seed = std::strtoull(next(), nullptr, 10);
         else if (!std::strcmp(argv[i], "--frames")) opts.frames = std::atoi(next());
@@ -33,12 +37,16 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--light-cpu")) opts.lightCpu = true;
         else if (!std::strcmp(argv[i], "--light-selftest")) opts.lightSelfTest = true;
         else if (!std::strcmp(argv[i], "--load")) { opts.load = next(); opts.scene = "world"; }
-        else if (!std::strcmp(argv[i], "--autoplay")) { opts.autoplay = true; if (opts.scene == "demo") opts.scene = "play"; }
+        else if (!std::strcmp(argv[i], "--autoplay")) opts.autoplay = true;
+        else if (!std::strcmp(argv[i], "--at")) {
+            opts.at = std::sscanf(next(), "%f,%f", &opts.atX, &opts.atY) == 2;
+        }
         else if (!std::strcmp(argv[i], "--gas-view")) {
             const char* v = next();
             opts.gasView = !std::strcmp(v, "velocity") ? 1 : !std::strcmp(v, "pressure") ? 2 : 0;
         }
     }
+    if (opts.autoplay && !sceneGiven && opts.load.empty()) opts.scene = "play"; // plain --autoplay is the play-scene demo
     notita::App app(opts);
     if (!app.init()) return 1;
     if (opts.gasSelfTest) return app.gasSelfTest();
