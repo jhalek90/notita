@@ -2,10 +2,12 @@
 // A 64x64 block of cells. Chunks are the unit of threading (checkerboard
 // passes), sleeping (dirty rects) and, later, streaming and saving.
 #include "Cell.h"
+#include "GasExchange.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 namespace notita {
 
@@ -74,6 +76,15 @@ struct Chunk {
     DirtyRect rect;           // what this tick processes (frozen at tick start)
     AtomicDirtyRect nextRect; // what the next tick will process
     std::uint32_t cellsProcessed = 0; // stats for the last tick
+    std::uint32_t events = 0;         // state changes / burns / reactions last tick
+
+    // Heat runs over the whole chunk when the chunk moves (rect not empty)
+    // or when heatNext was raised: by itself (temperatures still changing,
+    // something burning) or by a neighbour whose edge is warmer or colder.
+    bool heatActive = false;              // frozen at tick start
+    std::atomic<bool> heatNext{false};
+    std::vector<GasEmission> gasOut;      // gas handed to the GasExchange this tick
+    double ambientEnergy = 0.0;           // energy air cells lost to the ambient this tick
 
     Chunk() = default;
     Chunk(const Chunk&) = delete;
@@ -84,6 +95,7 @@ struct Chunk {
     int originX() const { return coord.x * kChunkSize; }
     int originY() const { return coord.y * kChunkSize; }
     bool active() const { return !rect.empty(); }
+    bool busy() const { return heatActive || active(); }
 };
 
 } // namespace notita

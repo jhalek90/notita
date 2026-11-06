@@ -1,7 +1,8 @@
 # notita materials
-# Each [section] is one material. Material id 0 is always "air" (built in).
+# Each [section] is one material. Material id 0 is always "air" (built in;
+# an [air] section may only set conductivity and heat_capacity).
 # Keys:
-#   kind            solid | powder | liquid | gas
+#   kind            solid | powder | liquid | gas | special (flames)
 #   label           name shown in the UI (default: section name)
 #   density         kg/m^3-ish; denser things sink through lighter fluids (air = 1.2)
 #   viscosity       liquids: 0 runs freely .. 1 barely spreads
@@ -9,21 +10,43 @@
 #   slide           powders: chance per tick to slide off a pile (lower = steeper piles)
 #   gravity         gravity scale (default 1)
 #   max_fall        terminal speed in pixels per tick (1..16, default 12)
-#   conductivity    heat (phase 2)
-#   heat_capacity   heat (phase 2)
 #   color           #rrggbb or #rrggbbaa
 #   color_variation per-pixel brightness spread (0..128)
-# Unknown keys are kept for later phases (reactions, melting points, ...).
+# Heat:
+#   conductivity    0..1, how fast heat moves through it (pairs use the harmonic mean)
+#   heat_capacity   energy per degree per cell (default 1; air 0.25)
+#   spawn_temp      temperature of freshly placed cells in C (default 20)
+#   mass            whole mass units per cell (default 1; air and flames 0).
+#                   Every change below must keep the mass, or it is rejected at load.
+# State changes (one going up, one going down; hot point must be above cold point):
+#   melt_point / boil_point  + melts_into / boils_into
+#   freeze_point / condense_point + freezes_into / condenses_into
+#   latent_heat     energy taken by the hot change (given back by the reverse one)
+#   change_chance   chance per tick to change once past the point (default 0.35)
+# Fire:
+#   ignite_point    starts burning at this temperature when touching air
+#   burn_time       ticks it burns (1..255); burn_heat = energy released per tick
+#   burn_max_temp   burning adds no heat above this (default 900)
+#   burns_into      what it becomes when burnt out; burn_residue + residue_chance
+#                   for an optional second product (e.g. ash)
+#   flame_chance    chance per tick to throw a flame into the air next to it
+#   flame           the flame material (default "flame"); flames use life_min/life_max
+# Reactions between two materials live in data/reactions.luau.
+# Unknown keys are kept for later phases.
 
 [bedrock]
 kind = solid
 density = 5000
+conductivity = 0.05
+heat_capacity = 2.0
 color = #2e2a33
 color_variation = 6
 
 [slate]
 kind = solid
 density = 2700
+conductivity = 0.2
+heat_capacity = 1.0
 color = #6b6f78
 color_variation = 14
 
@@ -31,6 +54,10 @@ color_variation = 14
 kind = powder
 density = 1600
 slide = 0.85
+conductivity = 0.1
+heat_capacity = 0.8
+melt_point = 1150
+melts_into = molten_glass
 color = #d8b86a
 color_variation = 18
 
@@ -38,6 +65,8 @@ color_variation = 18
 kind = powder
 density = 2400
 slide = 0.45
+conductivity = 0.12
+heat_capacity = 0.9
 color = #7a5a4c
 color_variation = 22
 
@@ -46,6 +75,13 @@ kind = liquid
 density = 1000
 viscosity = 0.0
 spread = 6
+conductivity = 0.3
+heat_capacity = 1.0
+boil_point = 100
+boils_into = steam
+latent_heat = 8
+freeze_point = 0
+freezes_into = frost
 color = #3a78c8c8
 color_variation = 8
 
@@ -54,6 +90,13 @@ kind = liquid
 density = 820
 viscosity = 0.15
 spread = 5
+conductivity = 0.12
+heat_capacity = 0.6
+ignite_point = 230
+burn_time = 90
+burn_heat = 14
+flame_chance = 0.45
+burns_into = smoke
 color = #9c7a2ed0
 color_variation = 10
 
@@ -62,6 +105,15 @@ kind = liquid
 density = 1400
 viscosity = 0.85
 spread = 2
+conductivity = 0.1
+heat_capacity = 1.2
+ignite_point = 320
+burn_time = 160
+burn_heat = 8
+flame_chance = 0.2
+burns_into = smoke
+burn_residue = ash
+residue_chance = 0.5
 color = #c8661ce8
 color_variation = 10
 
@@ -70,6 +122,8 @@ kind = liquid
 density = 13500
 viscosity = 0.05
 spread = 5
+conductivity = 0.7
+heat_capacity = 0.4
 color = #c4ccd6
 color_variation = 12
 
@@ -77,6 +131,11 @@ color_variation = 12
 kind = gas
 density = 0.6
 spread = 2
+conductivity = 0.05
+heat_capacity = 0.5
+spawn_temp = 110
+condense_point = 70
+condenses_into = water
 color = #c8d2dc90
 color_variation = 12
 
@@ -84,5 +143,179 @@ color_variation = 12
 kind = gas
 density = 3.5
 spread = 2
+conductivity = 0.04
+heat_capacity = 0.4
+ignite_point = 400
+burn_time = 4
+burn_heat = 40
+flame_chance = 0.6
+burns_into = smoke
 color = #5c7a3ca0
 color_variation = 14
+
+; ---- phase 2: heat, fire and chemistry ----
+
+[frost]
+label = Frost
+kind = solid
+density = 917
+conductivity = 0.35
+heat_capacity = 0.9
+spawn_temp = -30
+melt_point = 2
+melts_into = water
+color = #bfe3f2e8
+color_variation = 10
+
+[magma]
+kind = liquid
+density = 2800
+viscosity = 0.92
+spread = 2
+conductivity = 0.25
+heat_capacity = 1.2
+spawn_temp = 1300
+freeze_point = 750
+freezes_into = basalt
+color = #e8561c
+color_variation = 26
+
+[basalt]
+kind = solid
+density = 2900
+conductivity = 0.2
+heat_capacity = 1.2
+melt_point = 950
+melts_into = magma
+color = #3b3533
+color_variation = 12
+
+[molten_glass]
+kind = liquid
+density = 2400
+viscosity = 0.9
+spread = 2
+conductivity = 0.15
+heat_capacity = 0.8
+spawn_temp = 1250
+freeze_point = 850
+freezes_into = glass
+color = #f2a648
+color_variation = 16
+
+[glass]
+kind = solid
+density = 2500
+conductivity = 0.12
+heat_capacity = 0.8
+melt_point = 1050
+melts_into = molten_glass
+color = #a8d8d070
+color_variation = 6
+
+[timber]
+kind = solid
+density = 600
+conductivity = 0.04
+heat_capacity = 1.2
+ignite_point = 300
+burn_time = 230
+burn_heat = 16
+flame_chance = 0.22
+burns_into = smoke
+burn_residue = ash
+residue_chance = 0.35
+color = #7b5232
+color_variation = 18
+
+[ash]
+kind = powder
+density = 500
+slide = 0.6
+conductivity = 0.05
+heat_capacity = 0.6
+color = #8c8780
+color_variation = 16
+
+[smoke]
+kind = gas
+density = 0.9
+spread = 2
+conductivity = 0.04
+heat_capacity = 0.4
+spawn_temp = 300
+condense_point = 45
+condenses_into = ash
+change_chance = 0.01
+color = #4a4648a0
+color_variation = 16
+
+[flame]
+kind = special
+density = 0.3
+conductivity = 0.6
+heat_capacity = 0.3
+spawn_temp = 950
+life_min = 10
+life_max = 34
+color = #ff9a2a
+color_variation = 40
+
+[etchant]
+kind = liquid
+density = 1150
+viscosity = 0.05
+spread = 5
+conductivity = 0.25
+heat_capacity = 1.0
+boil_point = 140
+boils_into = etchant_fume
+latent_heat = 6
+color = #9be04ad0
+color_variation = 12
+
+[etchant_fume]
+label = Etchant fume
+kind = gas
+density = 2.2
+spread = 2
+conductivity = 0.05
+heat_capacity = 0.5
+spawn_temp = 150
+condense_point = 110
+condenses_into = etchant
+color = #b8e888a0
+color_variation = 12
+
+[iron]
+kind = solid
+density = 7800
+conductivity = 0.85
+heat_capacity = 0.5
+color = #8a8f96
+color_variation = 10
+
+[rust_salt]
+label = Rust salt
+kind = powder
+density = 1900
+slide = 0.7
+conductivity = 0.1
+heat_capacity = 0.8
+color = #b0603a
+color_variation = 20
+
+[hydrogen]
+kind = gas
+density = 0.09
+spread = 3
+conductivity = 0.1
+heat_capacity = 0.3
+ignite_point = 500
+burn_time = 2
+burn_heat = 80
+burn_max_temp = 1400
+flame_chance = 0.9
+burns_into = steam
+color = #e6ecff50
+color_variation = 6

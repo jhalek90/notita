@@ -16,6 +16,13 @@ int applyBrush(World& world, const MaterialRegistry& mats, const Brush& brush, i
             if (brush.shape == BrushShape::Circle && dx * dx + dy * dy > r2) continue;
             Cell* c = world.cell(x + dx, y + dy);
             if (!c) continue;
+            if (brush.mode == BrushMode::Heat || brush.mode == BrushMode::Cool) {
+                const float d2 = static_cast<float>(dx * dx + dy * dy) / static_cast<float>(std::max(r2, 1));
+                const float falloff = 1.0f - 0.75f * std::min(d2, 1.0f);
+                world.addHeat(x + dx, y + dy, (brush.mode == BrushMode::Heat ? brush.heat : -brush.heat) * falloff);
+                ++changed;
+                continue;
+            }
             if (brush.mode == BrushMode::Erase) {
                 if (c->material == kEmpty) continue;
                 world.place(x + dx, y + dy, kEmpty, 0);
@@ -28,7 +35,7 @@ int applyBrush(World& world, const MaterialRegistry& mats, const Brush& brush, i
                 if (k != MaterialKind::Empty && k != MaterialKind::Gas) continue;
             }
             if (c->material == brush.material && brush.mode != BrushMode::Replace) continue;
-            world.place(x + dx, y + dy, brush.material, static_cast<std::uint8_t>(rng.below(256)));
+            world.setCell(x + dx, y + dy, mats[brush.material].spawn(static_cast<std::uint8_t>(rng.below(256))));
             ++changed;
         }
     return changed;
