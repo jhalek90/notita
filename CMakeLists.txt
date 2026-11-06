@@ -28,6 +28,8 @@ add_library(notita_sim STATIC
     src/sim/Brush.cpp
     src/sim/Scenes.cpp
     src/sim/Reactions.cpp
+    src/sim/GasGrid.cpp
+    src/sim/GasSolverCpu.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
 if(MSVC)
@@ -53,7 +55,7 @@ target_link_libraries(notita_bench PRIVATE notita_sim notita_script)
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
 endif()
