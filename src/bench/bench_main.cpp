@@ -1,11 +1,19 @@
 // Headless benchmark: a 640x384 world (10x6 chunks, a bit more than the
 // 640x360 view) completely full of moving material.
-//   churn: 70% of all pixels are a random mix of powders/liquids/gas that
-//          fall, sort and slosh (worst case right after the fill)
-//   flip:  sustained load: the same world is turned upside down every 90
-//          ticks, so the whole screen keeps falling and re-sorting
+//   churn:   70% of all pixels are a random mix of powders/liquids/gas that
+//            fall, sort and slosh (worst case right after the fill)
+//   flip:    sustained load: the same world is turned upside down every 90
+//            ticks, so the whole screen keeps falling and re-sorting
+//   thermal: churn with magma, frost, timber, etchant and iron in the mix at
+//            their spawn temperatures: boiling, freezing, burning and
+//            reactions everywhere, plus the flip every 90 ticks
+//   conduct: solid slate at random temperatures: heat only, nothing moves
+// churn and flip run with heat off (phase 1 numbers) and on; thermal always
+// has heat and the reaction table on.
 // Usage: notita_bench [ticks] [threads...]
+#include "script/ReactionScript.h"
 #include "sim/Material.h"
+#include "sim/Reactions.h"
 #include "sim/Scenes.h"
 #include "sim/Simulator.h"
 
@@ -22,38 +30,55 @@ namespace {
 
 struct Result {
     double mean = 0, p50 = 0, p95 = 0, max = 0;
-    double activeChunks = 0, cells = 0;
+    double activeChunks = 0, heatChunks = 0, cells = 0, events = 0;
 };
 
-Result summarize(std::vector<double>& ms, double activeSum, double cellSum) {
-    Result r;
-    std::sort(ms.begin(), ms.end());
-    for (double v : ms) r.mean += v;
-    r.mean /= static_cast<double>(ms.size());
-    r.p50 = ms[ms.size() / 2];
-    r.p95 = ms[std::min(ms.size() - 1, ms.size() * 95 / 100)];
-    r.max = ms.back();
-    r.activeChunks = activeSum / static_cast<double>(ms.size());
-    r.cells = cellSum / static_cast<double>(ms.size());
-    return r;
-}
+enum class Scene { Churn, Flip, Thermal, Conduct };
 
-Result runScene(const MaterialRegistry& mats, bool flip, int threads, int ticks) {
+Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Scene scene, bool heat, int threads,
+                int ticks) {
     World world(0, 0, 10, 6);
     ThreadPool pool(threads);
-    Simulator sim(world, mats, &pool, 2026);
-    scenes::churn(world, mats, 77);
+    Simulator sim(world, mats, &pool, 2026, &reactions);
+    sim.params().heat = heat;
+    sim.params().reactions = heat;
+    if (scene == Scene::Thermal) scenes::thermalChurn(world, mats, 77);
+    else if (scene == Scene::Conduct) {
+        // solid slate at random temperatures: nothing moves, only heat flows
+        Rng rng(77);
+        for (Chunk* ch : world.chunks())
+            for (Cell& c : ch->cells) {
+                c = mats.find("slate")->spawn(static_cast<std::uint8_t>(rng.below(256)));
+                c.temperature = static_cast<float>(rng.below(1000));
+            }
+        world.wakeAll();
+    } else scenes::churn(world, mats, 77);
+    const bool flip = scene == Scene::Flip || scene == Scene::Thermal;
     std::vector<double> ms;
-    double active = 0, cells = 0;
+    Result r;
     if (flip) for (int i = 0; i < 300; ++i) sim.tick(); // let the first fill settle a bit
     for (int i = 0; i < ticks; ++i) {
         if (flip && i % 90 == 0) scenes::flipVertical(world);
         sim.tick();
-        ms.push_back(sim.stats().tickMs);
-        active += sim.stats().activeChunks;
-        cells += static_cast<double>(sim.stats().cellsProcessed);
+        const SimStats& st = sim.stats();
+        ms.push_back(st.tickMs);
+        r.activeChunks += st.activeChunks;
+        r.heatChunks += st.heatChunks;
+        r.cells += static_cast<double>(st.cellsProcessed);
+        r.events += static_cast<double>(st.events);
     }
-    return summarize(ms, active, cells);
+    std::sort(ms.begin(), ms.end());
+    for (double v : ms) r.mean += v;
+    const double n = static_cast<double>(ms.size());
+    r.mean /= n;
+    r.p50 = ms[ms.size() / 2];
+    r.p95 = ms[std::min(ms.size() - 1, ms.size() * 95 / 100)];
+    r.max = ms.back();
+    r.activeChunks /= n;
+    r.heatChunks /= n;
+    r.cells /= n;
+    r.events /= n;
+    return r;
 }
 
 } // namespace
@@ -67,16 +92,27 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> errors;
     MaterialRegistry mats = MaterialRegistry::loadDefault(&errors);
-    for (auto& e : errors) std::printf("materials: %s\n", e.c_str());
+    ReactionTable reactions(mats);
+    loadDefaultReactions(reactions, &errors);
+    for (auto& e : errors) std::printf("data: %s\n", e.c_str());
 
     std::printf("notita sim benchmark: world 640x384 (10x6 chunks of 64x64), %d ticks per run, %d hw threads\n", ticks, hw);
-    std::printf("tick budget at 60 Hz: 16.67 ms\n\n");
-    std::printf("%-6s %8s %9s %9s %9s %9s %9s %12s\n", "scene", "threads", "mean ms", "p50 ms", "p95 ms", "max ms", "chunks", "cells/tick");
-    for (int scene = 0; scene < 2; ++scene)
+    std::printf("%zu materials, %zu reactions; tick budget at 60 Hz: 16.67 ms\n\n", mats.size(), reactions.size());
+    std::printf("%-8s %4s %7s %8s %8s %8s %8s %7s %7s %10s %8s\n", "scene", "heat", "threads", "mean ms", "p50 ms",
+                "p95 ms", "max ms", "motion", "heat", "cells/tick", "events");
+    struct Row { const char* name; Scene scene; bool heat; };
+    const Row rows[] = {
+        {"churn", Scene::Churn, false}, {"churn", Scene::Churn, true},
+        {"flip", Scene::Flip, false},   {"flip", Scene::Flip, true},
+        {"thermal", Scene::Thermal, true}, {"conduct", Scene::Conduct, true},
+    };
+    for (const Row& row : rows)
         for (int t : threadCounts) {
-            Result r = runScene(mats, scene == 1, t, ticks);
-            std::printf("%-6s %8d %9.3f %9.3f %9.3f %9.3f %9.1f %12.0f\n", scene ? "flip" : "churn", t,
-                        r.mean, r.p50, r.p95, r.max, r.activeChunks, r.cells);
+            const Result r = runScene(mats, reactions, row.scene, row.heat, t, ticks);
+            std::printf("%-8s %4s %7d %8.3f %8.3f %8.3f %8.3f %7.1f %7.1f %10.0f %8.0f\n", row.name, row.heat ? "on" : "off",
+                        t, r.mean, r.p50, r.p95, r.max, r.activeChunks, r.heatChunks, r.cells, r.events);
         }
+    std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"
+                "ignitions, burn-outs and reactions per tick\n");
     return 0;
 }

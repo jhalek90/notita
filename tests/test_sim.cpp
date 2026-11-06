@@ -108,7 +108,7 @@ kind = powder
 density = 1500
 color = #ff8000   # orange
 color_variation = 20
-melts_into = glass   # unknown keys are kept for later phases
+glow_hue = 30   # unknown keys are kept for later phases
 
 [thin]
 kind = liquid
@@ -126,7 +126,7 @@ color = #11223344
         CHECK(g->kind == MaterialKind::Powder);
         CHECK(g->density == 1500.0f);
         CHECK_EQ(g->color, 0xFF0080FFu);          // RGBA8 memory order
-        CHECK(g->extra.count("melts_into") == 1 && g->extra.at("melts_into") == "glass");
+        CHECK(g->extra.count("glow_hue") == 1 && g->extra.at("glow_hue") == "30");
         CHECK(g->label == "Glow sand");
     }
     const Material* t = reg.find("thin");

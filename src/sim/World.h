@@ -50,10 +50,12 @@ public:
 
     // Writes a cell and wakes it and its 8 neighbours. Returns false outside the world.
     bool setCell(int x, int y, const Cell& c);
-    bool place(int x, int y, MaterialId m, std::uint8_t shade);
+    bool place(int x, int y, MaterialId m, std::uint8_t shade, float temperature = kAmbientTemp);
+    // Changes a cell's temperature (clamped) and wakes heat around it.
+    bool addHeat(int x, int y, float degrees);
 
     void wake(int x, int y);                  // 3x3 around (x, y)
-    void wakeRect(int x0, int y0, int x1, int y1); // inclusive, world pixels
+    void wakeRect(int x0, int y0, int x1, int y1); // inclusive, world pixels (motion and heat)
     void wakeAll();
     void clear();                             // everything back to air, all chunks asleep
 
@@ -63,11 +65,14 @@ public:
     int widthPx() const { return (maxCx_ - minCx_ + 1) * kChunkSize; }
     int heightPx() const { return (maxCy_ - minCy_ + 1) * kChunkSize; }
 
-    // Freezes nextRect into rect for every chunk. Returns the number of active chunks.
+    // Freezes nextRect into rect (and heatNext into heatActive) for every
+    // chunk. Returns the number of chunks with motion.
     int beginTick();
 
-    std::uint64_t hash() const;               // of every cell's material, shade and velocity
+    std::uint64_t hash() const;               // of every cell's material, shade, velocity, temperature, flags, life
     std::size_t count(MaterialId m) const;
+    long long totalMass(const MaterialRegistry& mats) const;   // sum of Material::mass over all cells
+    double thermalEnergy(const MaterialRegistry& mats) const;  // sum of heat_capacity * temperature
 
 private:
     void rebuildList();

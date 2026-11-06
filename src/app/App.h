@@ -4,6 +4,7 @@
 #include "Renderer.h"
 #include "sim/Brush.h"
 #include "sim/Material.h"
+#include "sim/Reactions.h"
 #include "sim/Simulator.h"
 #include "sim/ThreadPool.h"
 #include "sim/World.h"
@@ -20,9 +21,10 @@ namespace notita {
 struct AppOptions {
     int  frames = 0;            // > 0: quit after this many frames (smoke runs)
     std::string screenshot;     // with frames: write the last view to this .bmp
-    std::string scene = "demo"; // demo | churn | empty
+    std::string scene = "demo"; // demo | forge | churn | thermal | empty
     int  threads = 0;           // 0 = all hardware threads
     std::uint64_t seed = 2026;
+    bool tempView = false;      // start in the temperature view
 };
 
 class App {
@@ -47,6 +49,7 @@ private:
     bool screenToWorld(float sx, float sy, int& wx, int& wy) const;
     bool writeScreenshot(const std::string& path) const;
     void rebuildDisplayPalette();
+    void buildHeatPalettes();
 
     AppOptions opts_;
     SDL_Window* window_ = nullptr;
@@ -58,6 +61,7 @@ private:
     MaterialRegistry mats_;
     std::vector<std::string> materialErrors_;
     std::vector<std::array<std::uint32_t, 256>> displayPalette_; // opaque, blended over air
+    std::unique_ptr<ReactionTable> reactions_;
     std::unique_ptr<World> world_;
     std::unique_ptr<ThreadPool> pool_;
     std::unique_ptr<Simulator> sim_;
@@ -82,6 +86,9 @@ private:
 
     // UI / debug
     bool showUi_ = true, showChunks_ = false, showDirty_ = false;
+    bool showTemp_ = false, glow_ = true; // temperature view (F5), hot pixels glow
+    std::array<std::uint32_t, 1024> tempPalette_{}; // -128 .. 1918 C in 2 C steps
+    std::array<std::uint32_t, 256> glowColor_{};    // 400 .. 1675 C in 5 C steps, alpha in the top byte
     std::array<float, 120> tickHistory_{};
     int tickHistoryPos_ = 0;
     double frameMs_ = 0.0;

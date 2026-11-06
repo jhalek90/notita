@@ -3,6 +3,7 @@
 #include "Rng.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace notita {
 
@@ -55,11 +56,20 @@ bool World::setCell(int x, int y, const Cell& c) {
     return true;
 }
 
-bool World::place(int x, int y, MaterialId m, std::uint8_t shade) {
+bool World::place(int x, int y, MaterialId m, std::uint8_t shade, float temperature) {
     Cell c;
     c.material = m;
     c.shade = shade;
+    c.temperature = temperature;
     return setCell(x, y, c);
+}
+
+bool World::addHeat(int x, int y, float degrees) {
+    Cell* c = cell(x, y);
+    if (!c) return false;
+    c->temperature = std::clamp(c->temperature + degrees, kMinTemp, kMaxTemp);
+    wake(x, y);
+    return true;
 }
 
 void World::wake(int x, int y) { wakeRect(x - 1, y - 1, x + 1, y + 1); }
@@ -75,11 +85,15 @@ void World::wakeRect(int x0, int y0, int x1, int y1) {
             const int ox = cx * kChunkSize, oy = cy * kChunkSize;
             c->nextRect.include(std::max(x0 - ox, 0), std::max(y0 - oy, 0),
                                 std::min(x1 - ox, kChunkMask), std::min(y1 - oy, kChunkMask));
+            c->heatNext.store(true, std::memory_order_relaxed);
         }
 }
 
 void World::wakeAll() {
-    for (Chunk* c : list_) c->nextRect.include(0, 0, kChunkMask, kChunkMask);
+    for (Chunk* c : list_) {
+        c->nextRect.include(0, 0, kChunkMask, kChunkMask);
+        c->heatNext.store(true, std::memory_order_relaxed);
+    }
 }
 
 void World::clear() {
@@ -87,6 +101,9 @@ void World::clear() {
         std::fill(std::begin(c->cells), std::end(c->cells), Cell{});
         c->nextRect.takeAndReset();
         c->rect = DirtyRect{};
+        c->heatNext.store(false, std::memory_order_relaxed);
+        c->heatActive = false;
+        c->gasOut.clear();
     }
 }
 
@@ -94,7 +111,10 @@ int World::beginTick() {
     int active = 0;
     for (Chunk* c : list_) {
         c->rect = c->nextRect.takeAndReset();
+        c->heatActive = c->heatNext.exchange(false, std::memory_order_relaxed);
         c->cellsProcessed = 0;
+        c->events = 0;
+        c->ambientEnergy = 0.0;
         if (!c->rect.empty()) ++active;
     }
     return active;
@@ -110,9 +130,29 @@ std::uint64_t World::hash() const {
                                     (static_cast<std::uint64_t>(static_cast<std::uint16_t>(cell.vx)) << 24) |
                                     (static_cast<std::uint64_t>(static_cast<std::uint16_t>(cell.vy)) << 40);
             h = (h ^ v) * 0x100000001B3ull;
+            std::uint32_t tbits;
+            static_assert(sizeof(tbits) == sizeof(cell.temperature));
+            std::memcpy(&tbits, &cell.temperature, sizeof tbits);
+            const std::uint64_t w = tbits | (static_cast<std::uint64_t>(cell.flags) << 32) |
+                                    (static_cast<std::uint64_t>(cell.life) << 40);
+            h = (h ^ w) * 0x100000001B3ull;
         }
     }
     return h;
+}
+
+long long World::totalMass(const MaterialRegistry& mats) const {
+    long long n = 0;
+    for (const Chunk* c : list_)
+        for (const Cell& cell : c->cells) n += mats[cell.material].mass;
+    return n;
+}
+
+double World::thermalEnergy(const MaterialRegistry& mats) const {
+    double e = 0;
+    for (const Chunk* c : list_)
+        for (const Cell& cell : c->cells) e += static_cast<double>(mats[cell.material].heatCapacity) * cell.temperature;
+    return e;
 }
 
 std::size_t World::count(MaterialId m) const {

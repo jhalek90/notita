@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.24)
 project(notita LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -15,6 +15,7 @@ option(NOTITA_DEPS_ONLY "Only configure third-party dependencies (bootstrap)" OF
 
 if(NOTITA_DEPS_ONLY)
     include(cmake/Dependencies.cmake)
+    include(cmake/Luau.cmake)
     return()
 endif()
 
@@ -26,6 +27,7 @@ add_library(notita_sim STATIC
     src/sim/ThreadPool.cpp
     src/sim/Brush.cpp
     src/sim/Scenes.cpp
+    src/sim/Reactions.cpp
 )
 target_include_directories(notita_sim PUBLIC src)
 if(MSVC)
@@ -38,13 +40,21 @@ find_package(Threads REQUIRED)
 target_link_libraries(notita_sim PUBLIC Threads::Threads)
 target_compile_definitions(notita_sim PUBLIC NOTITA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
+# ---- Scripting: Luau runs only at load time (data/reactions.luau -> ReactionTable) ----
+include(cmake/Luau.cmake)
+add_library(notita_script STATIC src/script/ReactionScript.cpp)
+target_link_libraries(notita_script PUBLIC notita_sim PRIVATE Luau.Compiler Luau.VM)
+if(MSVC)
+    target_compile_options(notita_script PRIVATE /W4 /permissive- /utf-8)
+endif()
+
 add_executable(notita_bench src/bench/bench_main.cpp)
-target_link_libraries(notita_bench PRIVATE notita_sim)
+target_link_libraries(notita_bench PRIVATE notita_sim notita_script)
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp)
-    target_link_libraries(notita_tests PRIVATE notita_sim)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp)
+    target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
 endif()
 
@@ -55,7 +65,7 @@ if(NOTITA_BUILD_APP)
         src/app/Renderer.cpp
         src/app/App.cpp
     )
-    target_link_libraries(notita PRIVATE notita_sim imgui SDL3::SDL3-static)
+    target_link_libraries(notita PRIVATE notita_sim notita_script imgui SDL3::SDL3-static)
     if(MSVC)
         target_compile_options(notita PRIVATE /W4 /permissive- /utf-8)
         set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT notita)

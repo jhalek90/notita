@@ -4,18 +4,34 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <utility>
 
 namespace notita {
 
 namespace {
 
+constexpr float kHeatSleepEps = 0.01f;    // degrees per tick below which heat counts as settled
+constexpr float kAmbientDeadband = 0.05f; // air this close to ambient is left alone
+constexpr float kMinHeatDiff = 1.0e-3f;   // neighbours closer than this don't exchange heat
+
+// Shared, read-only during a tick.
+struct TickContext {
+    const MaterialRegistry* mats;
+    const SimParams* params;
+    const ThermalProps* thermal;
+    const PairConduct* pairs;
+    std::size_t matCount;
+    const ReactionTable* reactions; // null when off
+    const std::uint16_t* reactPairs; // [a * matCount + b]: reaction index + 1, or 0
+    bool gasHook;
+};
+
 // Everything one chunk update needs. Lives on the worker's stack.
 class ChunkUpdate {
 public:
-    ChunkUpdate(World& world, const MaterialRegistry& mats, Chunk& self, std::uint64_t seed,
-                std::uint16_t stamp, const SimParams& params)
-        : mats_(mats), self_(self), rng_(seed), stamp_(stamp), params_(params) {
+    ChunkUpdate(World& world, const TickContext& ctx, Chunk& self, std::uint64_t seed, std::uint16_t stamp)
+        : mats_(*ctx.mats), ctx_(ctx), self_(self), rng_(seed), stamp_(stamp), params_(*ctx.params) {
         ox_ = self.originX();
         oy_ = self.originY();
         for (int dy = -1; dy <= 1; ++dy)
@@ -25,22 +41,27 @@ public:
 
     std::uint32_t run() {
         const DirtyRect r = self_.rect;
+        const ThermalProps* tp = ctx_.thermal;
         for (int ly = r.y1; ly >= r.y0; --ly) {        // bottom to top: falling stuff moves once
             const bool leftToRight = rng_.coin();       // alternate scan direction: no drift bias
             for (int i = r.x0; i <= r.x1; ++i) {
                 const int lx = leftToRight ? i : r.x1 - (i - r.x0);
                 Cell& c = self_.at(lx, ly);
                 if (c.stamp == stamp_) continue;
+                if (tp[c.material].reactive && ctx_.reactions && tryReact(ox_ + lx, oy_ + ly, &c)) continue;
                 const Material& m = mats_[c.material];
                 switch (m.kind) {
                 case MaterialKind::Powder: ++processed_; updatePowder(ox_ + lx, oy_ + ly, &c, m); break;
                 case MaterialKind::Liquid: ++processed_; updateLiquid(ox_ + lx, oy_ + ly, &c, m); break;
                 case MaterialKind::Gas:    ++processed_; updateGas(ox_ + lx, oy_ + ly, &c, m); break;
+                case MaterialKind::Special: ++processed_; updateFlame(ox_ + lx, oy_ + ly, &c); break;
                 default: break;
                 }
             }
         }
+        if (params_.heat && self_.busy()) heat();
         if (!selfNext_.empty()) self_.nextRect.include(selfNext_.x0, selfNext_.y0, selfNext_.x1, selfNext_.y1);
+        self_.events = events_;
         return processed_;
     }
 
@@ -255,7 +276,323 @@ private:
         }
     }
 
+    // ---------------------------------------------------------------- fire
+
+    std::uint8_t flameLife(const ThermalProps& f) {
+        return static_cast<std::uint8_t>(f.lifeMin + static_cast<int>(rng_.below(static_cast<std::uint32_t>(f.lifeMax - f.lifeMin + 1))));
+    }
+
+    void updateFlame(int x, int y, Cell* c) {
+        const ThermalProps& p = ctx_.thermal[c->material];
+        if (c->life == 0) {
+            c->life = flameLife(p); // placed by a brush: start its clock
+        } else if (--c->life == 0) {
+            // burnt out: the heat stays behind as hot air
+            c->material = kEmpty;
+            c->flags = 0;
+            c->stamp = stamp_;
+            wake(x, y);
+            return;
+        }
+        // a flame is the visible part of combustion: it stays at flame temperature while alive
+        c->temperature = std::max(c->temperature, p.spawnTemp);
+        c->stamp = stamp_;
+        wake(x, y);
+        // flicker upwards through air
+        const int dx = static_cast<int>(rng_.below(3)) - 1;
+        const int tries[2] = {dx, 0};
+        for (int k = 0; k < (dx != 0 ? 2 : 1); ++k) {
+            Cell* t = at(x + tries[k], y - 1);
+            if (t && t->material == kEmpty) {
+                swapCells(c, x, y, t, x + tries[k], y - 1);
+                return;
+            }
+        }
+    }
+
+    // A neighbour fire can draw through: air, a flame, any gas (smoke drifting
+    // off doesn't smother it) or a burning cell (the fire front eats into a
+    // block whose surface is alight). Up first, then the sides, then down.
+    Cell* findAir(int x, int y, int& ax, int& ay) {
+        const int side = rng_.coin() ? 1 : -1;
+        const int dx[4] = {0, side, -side, 0}, dy[4] = {-1, 0, 0, 1};
+        for (int k = 0; k < 4; ++k) {
+            Cell* n = at(x + dx[k], y + dy[k]);
+            if (!n) continue;
+            const MaterialKind kind = mats_[n->material].kind;
+            if (kind == MaterialKind::Empty || kind == MaterialKind::Special || kind == MaterialKind::Gas ||
+                (n->flags & kFlagBurning)) {
+                ax = x + dx[k];
+                ay = y + dy[k];
+                return n;
+            }
+        }
+        return nullptr;
+    }
+
+    void spawnFlame(Cell* n, int x, int y, MaterialId flame) {
+        const ThermalProps& f = ctx_.thermal[flame];
+        n->material = flame;
+        n->flags = 0;
+        n->vx = n->vy = 0;
+        n->temperature = std::max(n->temperature, f.spawnTemp);
+        n->life = flameLife(f);
+        n->shade = static_cast<std::uint8_t>(rng_.below(256));
+        n->stamp = stamp_;
+        wake(x, y);
+    }
+
+    void burn(int x, int y, Cell& c, const ThermalProps& p) {
+        int ax = 0, ay = 0;
+        Cell* air = findAir(x, y, ax, ay);
+        if (!air) {
+            // nothing to draw through: smothered after a while
+            if (rng_.below(64) == 0) c.flags &= static_cast<std::uint8_t>(~kFlagBurning);
+            return;
+        }
+        if (c.temperature < p.burnMax) c.temperature = std::min(c.temperature + p.burnDT, p.burnMax);
+        if (p.flame != kEmpty && air->material == kEmpty && rng_.chance16(p.flame16)) spawnFlame(air, ax, ay, p.flame);
+        if (c.temperature < p.ignite - 80.0f) { // doused
+            c.flags &= static_cast<std::uint8_t>(~kFlagBurning);
+            c.life = 0;
+            return;
+        }
+        if (c.life > 1) { --c.life; return; }
+        // burnt out
+        ++events_;
+        c.material = (p.residue != kEmpty && rng_.chance16(p.residue16)) ? p.residue : p.burnsInto;
+        c.flags = 0;
+        c.life = 0;
+        c.stamp = stamp_;
+        handOverGas(x, y, c);
+        wake(x, y);
+    }
+
+    // ------------------------------------------------------------ reactions
+
+    bool tryReact(int x, int y, Cell* c) {
+        // cheap filter first: one table load per neighbour
+        const std::uint16_t* pairRow = ctx_.reactPairs + static_cast<std::size_t>(c->material) * ctx_.matCount;
+        static constexpr int kDx[4] = {0, 1, 0, -1}, kDy[4] = {-1, 0, 1, 0};
+        Cell* hit[4];
+        int hx[4], hy[4], hits = 0;
+        for (int d = 0; d < 4; ++d) {
+            Cell* n = at(x + kDx[d], y + kDy[d]);
+            if (n && pairRow[n->material] != 0 && n->stamp != stamp_) {
+                hit[hits] = n;
+                hx[hits] = x + kDx[d];
+                hy[hits] = y + kDy[d];
+                ++hits;
+            }
+        }
+        if (hits == 0) return false;
+        const auto& all = ctx_.reactions->reactions();
+        const int start = hits > 1 ? static_cast<int>(rng_.below(static_cast<std::uint32_t>(hits))) : 0;
+        bool pending = false;
+        for (int k = 0; k < hits; ++k) {
+            const int i = (start + k) % hits;
+            Cell* n = hit[i];
+            const Reaction& r = all[pairRow[n->material] - 1u];
+            const bool swapped = r.a != c->material;
+            const float ta = swapped ? n->temperature : c->temperature;
+            if (ta < r.minTemp || ta > r.maxTemp) continue;
+            pending = true;
+            if (rng_.unit() >= r.chance) continue;
+            if (swapped) react(r, n, hx[i], hy[i], c, x, y);
+            else react(r, c, x, y, n, hx[i], hy[i]);
+            return true;
+        }
+        if (pending) wake(x, y); // a partner is there: keep trying next tick
+        return false;
+    }
+
+    void react(const Reaction& r, Cell* a, int ax, int ay, Cell* b, int bx, int by) {
+        const ThermalProps* tp = ctx_.thermal;
+        const float amb = params_.ambientTemp;
+        // the pair's heat (relative to ambient) plus the reaction heat, shared by the products
+        const float e = tp[a->material].cap * (a->temperature - amb) + tp[b->material].cap * (b->temperature - amb) + r.heat;
+        const float t = std::clamp(amb + e / (tp[r.outA].cap + tp[r.outB].cap), kMinTemp, kMaxTemp);
+        auto become = [&](Cell* cell, MaterialId m, int x, int y) {
+            cell->material = m;
+            cell->temperature = t;
+            cell->flags = 0;
+            cell->life = 0;
+            cell->vx = cell->vy = 0;
+            cell->stamp = stamp_;
+            handOverGas(x, y, *cell);
+            wake(x, y);
+        };
+        become(a, r.outA, ax, ay);
+        become(b, r.outB, bx, by);
+        ++events_;
+    }
+
+    // A freshly created gas goes to the gas grid instead, when one is attached.
+    void handOverGas(int x, int y, Cell& c) {
+        if (!ctx_.gasHook || !ctx_.thermal[c.material].takesGas) return;
+        self_.gasOut.push_back({x, y, c.material, mats_[c.material].mass, c.temperature});
+        c.material = kEmpty;
+        c.flags = 0;
+        c.life = 0;
+    }
+
+    // ----------------------------------------------------------------- heat
+
+    // Temperature-driven change. The heat above (or below) the change point
+    // is kept, the latent heat is taken (latent < 0) or given back (latent > 0).
+    void changeState(int x, int y, Cell& c, MaterialId into, float point, float latent) {
+        const ThermalProps* tp = ctx_.thermal;
+        const float sensible = (c.temperature - point) * tp[c.material].cap;
+        c.temperature = std::clamp(point + (sensible + latent) * tp[into].invCap, kMinTemp, kMaxTemp);
+        c.material = into;
+        c.flags = 0;
+        c.life = 0;
+        c.stamp = stamp_;
+        ++events_;
+        handOverGas(x, y, c);
+        wake(x, y);
+    }
+
+    void cellEvents(int x, int y, Cell& c, const ThermalProps& p, bool& keep) {
+        if (c.flags & kFlagBurning) {
+            keep = true;
+            burn(x, y, c, p);
+            return;
+        }
+        const float t = c.temperature;
+        if (t >= p.hotPoint) {
+            keep = true;
+            if (rng_.chance16(p.change16)) changeState(x, y, c, p.hotInto, p.hotPoint, -p.hotLatent);
+            return;
+        }
+        if (t <= p.coldPoint) {
+            keep = true;
+            if (rng_.chance16(p.change16)) changeState(x, y, c, p.coldInto, p.coldPoint, p.coldLatent);
+            return;
+        }
+        if (t >= p.ignite) {
+            int ax, ay;
+            if (findAir(x, y, ax, ay)) {
+                c.flags |= kFlagBurning;
+                c.life = static_cast<std::uint8_t>(p.burnTime);
+                keep = true;
+                ++events_;
+            }
+            return;
+        }
+        if (p.wakeForReaction && t >= p.reactMin) wake(x, y); // let the motion pass look for a partner
+    }
+
+    void heat() {
+        const ThermalProps* tp = ctx_.thermal;
+        const PairConduct* pc = ctx_.pairs;
+        const std::size_t n = ctx_.matCount;
+        Chunk* right = nb_[1][2];
+        Chunk* down = nb_[2][1];
+        const float amb = params_.ambientTemp, ambRate = params_.ambientRate;
+        const float airCap = tp[kEmpty].cap;
+        float maxChange = 0.0f;
+        bool keep = false, wakeRight = false, wakeDown = false;
+        double ambientOut = 0.0;
+        const bool reverse = (stamp_ & 1u) != 0; // alternate the scan so heat has no drift direction
+
+        // Pairs closer than kMinHeatDiff don't exchange (settled areas stay put).
+        // into the next chunk: wake it if its cell changed noticeably
+        auto exchangeOut = [&](Cell& a, Cell& b, bool& wakeOther) {
+            const float d = a.temperature - b.temperature;
+            if (std::abs(d) < kMinHeatDiff) return;
+            const PairConduct& g = pc[a.material * n + b.material];
+            const float da = g.a * d, db = g.b * d;
+            a.temperature -= da;
+            b.temperature += db;
+            maxChange = std::max(maxChange, std::abs(da));
+            if (std::abs(db) > kHeatSleepEps) wakeOther = true;
+        };
+
+        // 1. conduction: each cell trades with its right and lower neighbour,
+        //    rows top-down on even ticks and bottom-up on odd ones. Within a
+        //    row the horizontal fluxes are all computed from the same values,
+        //    then applied (no serial chain along the row); with the pair cap
+        //    every cell still ends at a convex average, so it can't overshoot.
+        //    Each pair moves a*C1 == b*C2 of energy, so the sum is kept exactly
+        //    (up to float rounding).
+        float leave[kChunkSize + 1], arrive[kChunkSize + 1]; // [x]: pair (x, x+1)
+        for (int k = 0; k < kChunkSize; ++k) {
+            const int ly = reverse ? kChunkMask - k : k;
+            Cell* row = &self_.cells[ly << kChunkShift];
+            float rowMax = 0.0f;
+            for (int lx = 0; lx < kChunkMask; ++lx) {
+                float d = row[lx].temperature - row[lx + 1].temperature;
+                d = std::abs(d) < kMinHeatDiff ? 0.0f : d;
+                const PairConduct& g = pc[row[lx].material * n + row[lx + 1].material];
+                leave[lx] = g.a * d;
+                arrive[lx + 1] = g.b * d;
+                rowMax = std::max(rowMax, std::max(std::abs(leave[lx]), std::abs(arrive[lx + 1])));
+            }
+            leave[kChunkMask] = 0.0f;
+            arrive[0] = 0.0f;
+            for (int lx = 0; lx < kChunkSize; ++lx) row[lx].temperature += arrive[lx] - leave[lx];
+            if (right) exchangeOut(row[kChunkMask], right->cells[ly << kChunkShift], wakeRight);
+            if (ly < kChunkMask) {
+                Cell* below = row + kChunkSize;
+                for (int lx = 0; lx < kChunkSize; ++lx) {
+                    float d = row[lx].temperature - below[lx].temperature;
+                    d = std::abs(d) < kMinHeatDiff ? 0.0f : d;
+                    const PairConduct& g = pc[row[lx].material * n + below[lx].material];
+                    const float da = g.a * d, db = g.b * d;
+                    row[lx].temperature -= da;
+                    below[lx].temperature += db;
+                    rowMax = std::max(rowMax, std::max(std::abs(da), std::abs(db)));
+                }
+            } else if (down) {
+                for (int lx = 0; lx < kChunkSize; ++lx) exchangeOut(row[lx], down->cells[lx], wakeDown);
+            }
+            maxChange = std::max(maxChange, rowMax);
+        }
+
+        // 2. state changes, fire and the ambient
+        for (int idx = 0; idx < kChunkCells; ++idx) {
+            Cell& c = self_.cells[idx];
+            const ThermalProps& p = tp[c.material];
+            if (p.events) cellEvents(ox_ + (idx & kChunkMask), oy_ + (idx >> kChunkShift), c, p, keep);
+            if (c.material == kEmpty && ambRate > 0.0f) {
+                const float dev = amb - c.temperature;
+                if (std::abs(dev) > kAmbientDeadband) {
+                    const float dt = dev * ambRate;
+                    c.temperature += dt;
+                    ambientOut -= static_cast<double>(dt) * airCap;
+                    maxChange = std::max(maxChange, std::abs(dt));
+                }
+            }
+        }
+
+        // pairs across the left and top edges belong to those neighbours: wake them when it matters
+        auto edge = [&](Chunk* other, bool vertical) {
+            if (!other) return;
+            for (int k = 0; k < kChunkSize; ++k) {
+                const Cell& mine = vertical ? self_.cells[k << kChunkShift] : self_.cells[k];
+                const Cell& theirs = vertical ? other->cells[(k << kChunkShift) | kChunkMask]
+                                              : other->cells[(kChunkMask << kChunkShift) | k];
+                const float d = mine.temperature - theirs.temperature;
+                if (d == 0.0f) continue;
+                const PairConduct& g = pc[theirs.material * n + mine.material];
+                if (std::abs(g.a * d) > kHeatSleepEps || std::abs(g.b * d) > kHeatSleepEps) {
+                    other->heatNext.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        };
+        edge(nb_[1][0], true);
+        edge(nb_[0][1], false);
+
+        if (wakeRight) right->heatNext.store(true, std::memory_order_relaxed);
+        if (wakeDown) down->heatNext.store(true, std::memory_order_relaxed);
+        if (keep || maxChange > kHeatSleepEps) self_.heatNext.store(true, std::memory_order_relaxed);
+        self_.ambientEnergy += ambientOut;
+    }
+
     const MaterialRegistry& mats_;
+    const TickContext& ctx_;
     Chunk& self_;
     Chunk* nb_[3][3]{};
     int ox_ = 0, oy_ = 0;
@@ -264,43 +601,160 @@ private:
     const SimParams& params_;
     DirtyRect selfNext_;
     std::uint32_t processed_ = 0;
+    std::uint32_t events_ = 0;
 };
 
 static_assert(16 + 1 + 1 < kMaxReach, "max fall / spread must stay inside the checkerboard margin");
 
 } // namespace
 
-Simulator::Simulator(World& world, const MaterialRegistry& materials, ThreadPool* pool, std::uint64_t seed)
-    : world_(world), mats_(materials), pool_(pool), seed_(seed) {}
+Simulator::Simulator(World& world, const MaterialRegistry& materials, ThreadPool* pool, std::uint64_t seed,
+                     const ReactionTable* reactions)
+    : world_(world), mats_(materials), pool_(pool), seed_(seed), reactions_(reactions) {
+    rebuildTables();
+}
+
+void Simulator::setReactions(const ReactionTable* reactions) {
+    reactions_ = reactions;
+    rebuildTables();
+}
+
+void Simulator::setGasExchange(GasExchange* exchange) {
+    gas_ = exchange;
+    rebuildTables();
+}
+
+void Simulator::rebuildTables() {
+    const std::size_t n = mats_.size();
+    thermal_.assign(n, ThermalProps{});
+    auto chance16 = [](float p) { return static_cast<std::uint32_t>(std::clamp(p, 0.0f, 1.0f) * 65536.0f); };
+    for (std::size_t i = 0; i < n; ++i) {
+        const Material& m = mats_[static_cast<MaterialId>(i)];
+        ThermalProps& p = thermal_[i];
+        p.cap = m.heatCapacity;
+        p.invCap = 1.0f / m.heatCapacity;
+        p.spawnTemp = m.spawnTemp;
+        p.lifeMin = m.lifeMin;
+        p.lifeMax = m.lifeMax;
+        p.change16 = chance16(m.changeChance);
+        if (m.hot.valid) {
+            p.hotPoint = m.hot.point;
+            p.hotInto = m.hot.into;
+            p.hotLatent = m.latentHeat;
+        }
+        if (m.cold.valid) {
+            p.coldPoint = m.cold.point;
+            p.coldInto = m.cold.into;
+            // going back down gives back the latent heat the other side took on the way up
+            const Material& into = mats_[m.cold.into];
+            p.coldLatent = (into.hot.valid && into.hot.into == m.id) ? into.latentHeat : 0.0f;
+        }
+        if (m.flammable()) {
+            p.ignite = m.ignitePoint;
+            p.burnTime = std::max(1, m.burnTime);
+            p.burnDT = m.burnHeat / m.heatCapacity;
+            p.burnMax = m.burnMaxTemp;
+            p.flame16 = chance16(m.flameChance);
+            p.burnsInto = m.burnsInto.into;
+            p.flame = m.flame;
+            if (m.burnResidue.valid) {
+                p.residue = m.burnResidue.into;
+                p.residue16 = chance16(m.residueChance);
+            }
+        }
+        p.events = m.hot.valid || m.cold.valid || m.flammable();
+        if (reactions_ && reactions_->reactive(static_cast<MaterialId>(i))) {
+            p.reactive = true;
+            p.reactMin = reactions_->lowestMinTemp(static_cast<MaterialId>(i));
+            p.wakeForReaction = p.reactMin > -kNoPoint;
+            p.events = p.events || p.wakeForReaction;
+        }
+        p.takesGas = gas_ && m.kind == MaterialKind::Gas && gas_->takesGas(m.id);
+    }
+
+    // Pair conduction. g is the series (harmonic mean) conductance, capped
+    // so one exchange moves the two cells at most halfway to their common
+    // temperature. Every exchange is then a convex average of the pair, so the
+    // in-place, pair-by-pair update can't overshoot or blow up, and
+    // a*C1 == b*C2 keeps the energy.
+    const float k = std::clamp(params_.conduction, 0.0f, 1.0f) * 0.5f;
+    pairs_.assign(n * n, PairConduct{});
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j) {
+            const Material& a = mats_[static_cast<MaterialId>(i)];
+            const Material& b = mats_[static_cast<MaterialId>(j)];
+            const float sum = a.conductivity + b.conductivity;
+            float g = sum > 0.0f ? k * 2.0f * a.conductivity * b.conductivity / sum : 0.0f;
+            const float ia = 1.0f / a.heatCapacity, ib = 1.0f / b.heatCapacity;
+            g = std::min(g, 0.5f / (ia + ib));
+            pairs_[i * n + j] = {g * ia, g * ib};
+        }
+    tablesConduction_ = params_.conduction;
+
+    reactPairs_.assign(n * n, 0);
+    if (reactions_) {
+        const auto& all = reactions_->reactions();
+        for (std::size_t i = 0; i < all.size(); ++i) {
+            const Reaction& r = all[i];
+            const auto v = static_cast<std::uint16_t>(i + 1);
+            reactPairs_[static_cast<std::size_t>(r.a) * n + r.b] = v;
+            reactPairs_[static_cast<std::size_t>(r.b) * n + r.a] = v;
+        }
+    }
+}
 
 void Simulator::updateChunk(Chunk& chunk, int pass) {
     const std::uint64_t s = Rng::hash(Rng::hash(seed_, tick_ * 4 + static_cast<std::uint64_t>(pass)),
                                       chunkKey(chunk.coord.x, chunk.coord.y));
     const auto stamp = static_cast<std::uint16_t>(tick_ % 65535u + 1u); // never 0 (fresh cells)
-    ChunkUpdate u(world_, mats_, chunk, s, stamp, params_);
+    const TickContext ctx{&mats_, &params_, thermal_.data(), pairs_.data(), mats_.size(),
+                          params_.reactions ? reactions_ : nullptr, reactPairs_.data(), gas_ != nullptr};
+    ChunkUpdate u(world_, ctx, chunk, s, stamp);
     chunk.cellsProcessed = u.run();
 }
 
 void Simulator::tick() {
     const auto t0 = std::chrono::steady_clock::now();
+    if (params_.conduction != tablesConduction_) rebuildTables();
     ++tick_;
     stats_.activeChunks = world_.beginTick();
     stats_.totalChunks = static_cast<int>(world_.chunks().size());
+
+    int heatChunks = 0;
+    if (params_.heat)
+        for (const Chunk* c : world_.chunks()) heatChunks += c->busy();
+    stats_.heatChunks = heatChunks;
 
     for (int pass = 0; pass < 4; ++pass) {
         const int px = pass & 1, py = pass >> 1;
         jobs_.clear();
         for (Chunk* c : world_.chunks())
-            if (c->active() && (c->coord.x & 1) == px && (c->coord.y & 1) == py) jobs_.push_back(c);
+            if ((c->active() || (params_.heat && c->heatActive)) && (c->coord.x & 1) == px && (c->coord.y & 1) == py)
+                jobs_.push_back(c);
         if (jobs_.empty()) continue;
         const std::function<void(int)> job = [&](int i) { updateChunk(*jobs_[i], pass); };
         if (pool_) pool_->parallelFor(static_cast<int>(jobs_.size()), job);
         else for (int i = 0; i < static_cast<int>(jobs_.size()); ++i) job(i);
     }
 
-    std::uint64_t processed = 0;
-    for (const Chunk* c : world_.chunks()) processed += c->cellsProcessed;
+    std::uint64_t processed = 0, events = 0;
+    double ambient = 0.0;
+    emissions_.clear();
+    for (Chunk* c : world_.chunks()) {
+        processed += c->cellsProcessed;
+        events += c->events;
+        ambient += c->ambientEnergy;
+        if (!c->gasOut.empty()) {
+            emissions_.insert(emissions_.end(), c->gasOut.begin(), c->gasOut.end());
+            c->gasOut.clear();
+        }
+    }
+    if (gas_) {
+        gas_->absorb(emissions_.data(), emissions_.size());
+        gas_->ambientHeat(ambient);
+    }
     stats_.cellsProcessed = processed;
+    stats_.events = events;
     stats_.tick = tick_;
     stats_.tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

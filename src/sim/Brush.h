@@ -1,5 +1,6 @@
 #pragma once
-// Sandbox brushes: place / replace / erase any material with a circle or square.
+// Sandbox brushes: place / replace / erase any material, or heat / cool, with a
+// circle or square. Placed cells start at their material's spawn temperature.
 #include "Material.h"
 #include "Rng.h"
 #include "World.h"
@@ -11,6 +12,8 @@ enum class BrushMode {
     Place,   // fill only cells that hold air or a gas
     Replace, // overwrite everything
     Erase,   // set to air
+    Heat,    // raise the temperature of whatever is there
+    Cool,    // lower it
 };
 
 struct Brush {
@@ -19,6 +22,7 @@ struct Brush {
     BrushShape shape = BrushShape::Circle;
     BrushMode  mode = BrushMode::Place;
     float      density = 1.0f;      // fraction of cells painted per dab (spray when < 1)
+    float      heat = 25.0f;        // Heat / Cool: degrees per dab at the centre (fades to 1/4 at the rim)
 };
 
 // One dab centred at (x, y). Returns the number of cells changed.

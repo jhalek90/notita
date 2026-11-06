@@ -1,5 +1,6 @@
 ﻿#include "App.h"
 
+#include "script/ReactionScript.h"
 #include "sim/Scenes.h"
 
 #include "imgui.h"
@@ -51,12 +52,21 @@ bool App::init() {
     mats_ = MaterialRegistry::loadDefault(&materialErrors_);
     for (const auto& e : materialErrors_) SDL_Log("materials: %s", e.c_str());
     rebuildDisplayPalette();
+    buildHeatPalettes();
+    reactions_ = std::make_unique<ReactionTable>(mats_);
+    {
+        std::vector<std::string> errs;
+        loadDefaultReactions(*reactions_, &errs);
+        for (const auto& e : errs) SDL_Log("reactions: %s", e.c_str());
+        materialErrors_.insert(materialErrors_.end(), errs.begin(), errs.end());
+    }
     world_ = std::make_unique<World>(0, 0, kWorldChunksW, kWorldChunksH);
     pool_ = std::make_unique<ThreadPool>(opts_.threads);
-    sim_ = std::make_unique<Simulator>(*world_, mats_, pool_.get(), opts_.seed);
+    sim_ = std::make_unique<Simulator>(*world_, mats_, pool_.get(), opts_.seed, reactions_.get());
     brush_.material = mats_.idOf("sand");
     brush_.radius = 6;
     loadScene(opts_.scene);
+    showTemp_ = opts_.tempView;
 
     // ---- window + GPU ----
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -127,8 +137,61 @@ void App::rebuildDisplayPalette() {
         for (int s = 0; s < 256; ++s) displayPalette_[i][s] = blendOver(mats_[static_cast<MaterialId>(i)].palette[s], air);
 }
 
+namespace {
+
+std::uint32_t rgb(float r, float g, float b, float a = 1.0f) {
+    auto c = [](float v) { return static_cast<std::uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    return c(r) | (c(g) << 8) | (c(b) << 16) | (c(a) << 24);
+}
+
+// piecewise-linear colour ramp over (t, r, g, b) stops
+std::uint32_t ramp(const float (*stops)[4], int n, float t) {
+    if (t <= stops[0][0]) return rgb(stops[0][1], stops[0][2], stops[0][3]);
+    for (int i = 1; i < n; ++i)
+        if (t <= stops[i][0]) {
+            const float f = (t - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]);
+            auto mix = [&](int k) { return stops[i - 1][k] + (stops[i][k] - stops[i - 1][k]) * f; };
+            return rgb(mix(1), mix(2), mix(3));
+        }
+    return rgb(stops[n - 1][1], stops[n - 1][2], stops[n - 1][3]);
+}
+
+std::uint32_t mixColor(std::uint32_t a, std::uint32_t b, std::uint32_t wb) { // wb: 0..255 weight of b
+    auto ch = [&](int s) {
+        const std::uint32_t x = (a >> s) & 0xFF, y = (b >> s) & 0xFF;
+        return ((x * (255 - wb) + y * wb) / 255) << s;
+    };
+    return ch(0) | ch(8) | ch(16) | 0xFF000000u;
+}
+
+} // namespace
+
+void App::buildHeatPalettes() {
+    // thermal-camera style: cold blues, ambient near black, then red, orange, yellow, white
+    static const float temp[][4] = {
+        {-100, 0.55f, 0.85f, 1.00f}, {-20, 0.10f, 0.35f, 0.85f}, {10, 0.05f, 0.08f, 0.25f}, {20, 0.06f, 0.06f, 0.08f},
+        {45, 0.25f, 0.05f, 0.35f},  {100, 0.65f, 0.05f, 0.35f}, {300, 0.90f, 0.20f, 0.05f}, {700, 1.00f, 0.60f, 0.05f},
+        {1200, 1.00f, 0.95f, 0.35f}, {1800, 1.00f, 1.00f, 1.00f},
+    };
+    for (std::size_t i = 0; i < tempPalette_.size(); ++i)
+        tempPalette_[i] = ramp(temp, static_cast<int>(std::size(temp)), -128.0f + 2.0f * static_cast<float>(i));
+    // incandescence: dull red from ~450 C to white-yellow past 1500 C
+    static const float glow[][4] = {
+        {400, 0.45f, 0.02f, 0.00f}, {650, 0.85f, 0.15f, 0.02f}, {950, 1.00f, 0.50f, 0.08f}, {1300, 1.00f, 0.85f, 0.40f},
+        {1675, 1.00f, 1.00f, 0.85f},
+    };
+    for (std::size_t i = 0; i < glowColor_.size(); ++i) {
+        const float t = 400.0f + 5.0f * static_cast<float>(i);
+        const float a = std::clamp((t - 420.0f) / 700.0f, 0.0f, 0.9f);
+        glowColor_[i] = (ramp(glow, static_cast<int>(std::size(glow)), t) & 0x00FFFFFFu) |
+                        (static_cast<std::uint32_t>(a * 255.0f) << 24);
+    }
+}
+
 void App::loadScene(const std::string& name) {
     if (name == "churn") scenes::churn(*world_, mats_, opts_.seed);
+    else if (name == "forge") scenes::forge(*world_, mats_, opts_.seed);
+    else if (name == "thermal") scenes::thermalChurn(*world_, mats_, opts_.seed);
     else if (name == "empty") world_->clear();
     else scenes::demo(*world_, mats_, opts_.seed);
     camX_ = static_cast<float>(world_->minX() + (world_->widthPx() - kViewW) / 2);
@@ -181,6 +244,11 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_TAB || k == SDLK_F1) showUi_ = !showUi_;
         else if (k == SDLK_F3) showChunks_ = !showChunks_;
         else if (k == SDLK_F4) showDirty_ = !showDirty_;
+        else if (k == SDLK_F5) showTemp_ = !showTemp_;
+        else if (k == SDLK_H) brush_.mode = BrushMode::Heat;
+        else if (k == SDLK_J) brush_.mode = BrushMode::Cool;
+        else if (k == SDLK_P) brush_.mode = BrushMode::Place;
+        else if (k == SDLK_F) loadScene("forge");
         else if (k == SDLK_LEFTBRACKET) brush_.radius = std::max(0, brush_.radius - 1);
         else if (k == SDLK_RIGHTBRACKET) brush_.radius = std::min(64, brush_.radius + 1);
         else if (k == SDLK_R) loadScene("demo");
@@ -216,8 +284,13 @@ void App::updateInput(float dt) {
         int wx, wy;
         screenToWorld(mouseX_, mouseY_, wx, wy);
         Brush b = brush_;
-        if (erasing_) b.mode = BrushMode::Erase;
+        const bool ctrl = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+        if (ctrl) b.mode = erasing_ ? BrushMode::Cool : BrushMode::Heat; // Ctrl: LMB heats, RMB cools
+        else if (erasing_) b.mode = BrushMode::Erase;
+        else if (b.mode == BrushMode::Heat || b.mode == BrushMode::Cool) {} // heat brush picked in the panel
         else if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) b.mode = BrushMode::Replace;
+        // heat brushes are per second, not per dab, so they don't depend on the frame rate
+        if (b.mode == BrushMode::Heat || b.mode == BrushMode::Cool) b.heat = brush_.heat * 60.0f * dt;
         strokeBrush(*world_, mats_, b, lastWX_, lastWY_, wx, wy, brushRng_);
         lastWX_ = wx;
         lastWY_ = wy;
@@ -262,9 +335,30 @@ void App::drawWorld() {
             for (int y = y0; y < y1; ++y) {
                 std::uint32_t* row = &px[static_cast<std::size_t>(y - cy0) * kViewW];
                 const Cell* cells = &ch->at(0, y - oy);
-                for (int x = x0; x < x1; ++x) {
-                    const Cell& c = cells[x - ox];
-                    row[x - cx0] = displayPalette_[c.material][c.shade];
+                if (showTemp_) {
+                    // temperature view: the heat colour, with a little of the material showing through
+                    for (int x = x0; x < x1; ++x) {
+                        const Cell& c = cells[x - ox];
+                        const int ti = std::clamp(static_cast<int>((c.temperature + 128.0f) * 0.5f), 0, 1023);
+                        const std::uint32_t base = displayPalette_[c.material][c.shade];
+                        row[x - cx0] = mixColor(base, tempPalette_[static_cast<std::size_t>(ti)], c.material == kEmpty ? 235 : 190);
+                    }
+                } else if (glow_) {
+                    for (int x = x0; x < x1; ++x) {
+                        const Cell& c = cells[x - ox];
+                        std::uint32_t col = displayPalette_[c.material][c.shade];
+                        if (c.temperature > 420.0f && !mats_[c.material].isFlame()) {
+                            const int gi = std::min(static_cast<int>((c.temperature - 400.0f) * 0.2f), 255);
+                            const std::uint32_t g = glowColor_[static_cast<std::size_t>(gi)];
+                            col = mixColor(col, g | 0xFF000000u, g >> 24);
+                        }
+                        row[x - cx0] = col;
+                    }
+                } else {
+                    for (int x = x0; x < x1; ++x) {
+                        const Cell& c = cells[x - ox];
+                        row[x - cx0] = displayPalette_[c.material][c.shade];
+                    }
                 }
             }
         }
@@ -310,6 +404,7 @@ void App::drawUi() {
     ImGui::Begin("Sandbox", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
     ImGui::SeparatorText("Material");
+    ImGui::BeginChild("##materials", ImVec2(ImGui::GetFontSize() * 15.0f, ImGui::GetFontSize() * 14.0f));
     for (std::size_t i = 1; i < mats_.size(); ++i) {
         const Material& m = mats_[static_cast<MaterialId>(i)];
         ImGui::PushID(static_cast<int>(i));
@@ -319,19 +414,38 @@ void App::drawUi() {
         char label[96];
         std::snprintf(label, sizeof label, i <= 9 ? "%s  [%zu]" : "%s", m.label.c_str(), i);
         if (ImGui::Selectable(label, brush_.material == m.id)) brush_.material = m.id;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s, density %.1f%s", kindName(m.kind), m.density,
-                              m.kind == MaterialKind::Liquid ? (m.viscosity > 0.5f ? ", viscous" : "") : "");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::Text("%s, density %.1f%s", kindName(m.kind), m.density,
+                        m.kind == MaterialKind::Liquid ? (m.viscosity > 0.5f ? ", viscous" : "") : "");
+            ImGui::Text("conductivity %.2f, heat capacity %.2f, placed at %.0f C", m.conductivity, m.heatCapacity, m.spawnTemp);
+            if (m.hot.valid) ImGui::Text("above %.0f C -> %s", m.hot.point, mats_[m.hot.into].label.c_str());
+            if (m.cold.valid) ImGui::Text("below %.0f C -> %s", m.cold.point, mats_[m.cold.into].label.c_str());
+            if (m.flammable()) ImGui::Text("ignites at %.0f C, burns into %s", m.ignitePoint, mats_[m.burnsInto.into].label.c_str());
+            for (const auto& e : reactions_->of(m.id)) {
+                const Reaction& r = reactions_->reactions()[e.index];
+                ImGui::Text("+ %s -> %s + %s", mats_[e.partner].label.c_str(), mats_[e.swapped ? r.outB : r.outA].label.c_str(),
+                            mats_[e.swapped ? r.outA : r.outB].label.c_str());
+            }
+            ImGui::EndTooltip();
+        }
         ImGui::PopID();
     }
+    ImGui::EndChild();
     ImGui::SeparatorText("Brush");
     ImGui::SliderInt("Size", &brush_.radius, 0, 64);
     int shape = brush_.shape == BrushShape::Circle ? 0 : 1;
     if (ImGui::Combo("Shape", &shape, "Circle\0Square\0")) brush_.shape = shape == 0 ? BrushShape::Circle : BrushShape::Square;
-    int mode = brush_.mode == BrushMode::Place ? 0 : 1;
-    if (ImGui::Combo("Mode", &mode, "Fill empty\0Replace all\0")) brush_.mode = mode == 0 ? BrushMode::Place : BrushMode::Replace;
+    int mode = brush_.mode == BrushMode::Place ? 0 : brush_.mode == BrushMode::Replace ? 1 : brush_.mode == BrushMode::Heat ? 2 : 3;
+    if (ImGui::Combo("Mode", &mode, "Fill empty\0Replace all\0Heat (H)\0Cool (J)\0")) {
+        const BrushMode modes[] = {BrushMode::Place, BrushMode::Replace, BrushMode::Heat, BrushMode::Cool};
+        brush_.mode = modes[mode];
+    }
+    if (brush_.mode == BrushMode::Heat || brush_.mode == BrushMode::Cool)
+        ImGui::SliderFloat("Heat", &brush_.heat, 1.0f, 200.0f, "%.0f C per tick");
     ImGui::SliderFloat("Spray", &brush_.density, 0.05f, 1.0f, "%.2f");
     ImGui::TextDisabled("LMB paint, RMB erase, Shift = replace");
+    ImGui::TextDisabled("Ctrl+LMB heat, Ctrl+RMB cool, P paint");
     ImGui::TextDisabled("Wheel / [ ] size, MMB / WASD pan");
 
     ImGui::SeparatorText("Simulation");
@@ -339,7 +453,18 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Step (.)")) { paused_ = true; ++stepRequests_; }
     ImGui::SliderFloat("Speed", &speed_, 0.1f, 4.0f, "%.2fx");
+    SimParams& sp = sim_->params();
+    ImGui::Checkbox("Heat", &sp.heat);
+    ImGui::SameLine();
+    ImGui::Checkbox("Reactions", &sp.reactions);
+    ImGui::SliderFloat("Conduction", &sp.conduction, 0.05f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Air cooling", &sp.ambientRate, 0.0f, 0.03f, "%.4f");
+    ImGui::Checkbox("Temperature view (F5)", &showTemp_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Glow", &glow_);
     if (ImGui::Button("Demo (R)")) loadScene("demo");
+    ImGui::SameLine();
+    if (ImGui::Button("Forge (F)")) loadScene("forge");
     ImGui::SameLine();
     if (ImGui::Button("Full churn (B)")) loadScene("churn");
     ImGui::SameLine();
@@ -360,7 +485,8 @@ void App::drawUi() {
     ImGui::Text("tick %.3f ms  (avg %.3f, max %.3f)", st.tickMs, avg, peak);
     ImGui::PlotLines("##ticks", tickHistory_.data(), static_cast<int>(tickHistory_.size()), tickHistoryPos_, nullptr, 0.0f,
                      std::max(2.0f, peak * 1.2f), ImVec2(220, 36));
-    ImGui::Text("chunks %d / %d active", st.activeChunks, st.totalChunks);
+    ImGui::Text("chunks %d / %d moving, %d heat", st.activeChunks, st.totalChunks, st.heatChunks);
+    ImGui::Text("events %llu (changes, burns, reactions)", static_cast<unsigned long long>(st.events));
     ImGui::Text("cells moved/visited %llu", static_cast<unsigned long long>(st.cellsProcessed));
     ImGui::Text("tick #%llu  threads %d  seed %llu", static_cast<unsigned long long>(st.tick), pool_->threadCount(),
                 static_cast<unsigned long long>(sim_->seed()));
@@ -371,9 +497,10 @@ void App::drawUi() {
     int wx, wy;
     if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
         if (const Cell* c = world_->cell(wx, wy))
-            ImGui::Text("(%d, %d) %s  vy %.2f", wx, wy, mats_[c->material].label.c_str(), c->vy / 256.0);
+            ImGui::Text("(%d, %d) %s%s  %.1f C  vy %.2f", wx, wy, mats_[c->material].label.c_str(),
+                        (c->flags & kFlagBurning) ? " (burning)" : "", c->temperature, c->vy / 256.0);
     }
-    if (!materialErrors_.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%zu material file error(s), see log", materialErrors_.size());
+    if (!materialErrors_.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%zu material/reaction error(s), see log", materialErrors_.size());
     ImGui::End();
 }
 
