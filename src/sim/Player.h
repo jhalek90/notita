@@ -39,6 +39,7 @@
 namespace notita {
 
 class BodySystem;
+class ElectricSystem;
 class GasGrid;
 
 enum class Tool : std::uint8_t { Dig, Jet, Grapple, Blast, Raft, Freeze, Count };
@@ -108,6 +109,9 @@ struct PlayerParams {
     int   raftW = 48, raftH = 6;  // 288 px of timber: enough spare buoyancy in water to carry the player
     float freezeRate = 14.0f;     // degrees per tick at the brush centre
     float freezeFloor = -12.0f;   // C: the freeze tool cools nothing below this
+    // electricity: current through the liquid the player is in hurts
+    float shockCurrent = 0.01f;   // current per pixel that is felt
+    float shockDamage = 3.0f;     // hp per tick per unit of current (the strongest pixel, capped at 3)
 };
 
 struct PlayerInput {
@@ -135,6 +139,7 @@ struct PlayerStats {
     float windX = 0, windY = 0;   // px/tick, the grid wind around the player
     float hottest = kAmbientTemp; // C, around the player
     bool  blasted = false;        // a charge went off this tick
+    float shock = 0;              // strongest current through the liquid around the player this tick
 };
 
 // Phase 6: the player's dynamic state, for save files (the inventory is saved on its own).
@@ -153,6 +158,7 @@ public:
 
     void setGas(GasGrid* gas) { gas_ = gas; }
     void setBodies(BodySystem* bodies) { bodies_ = bodies; }
+    void setElectric(const ElectricSystem* electric) { electric_ = electric; }
 
     // Feet at (x, y): the capsule covers rows floor(y) - height .. floor(y) - 1.
     void spawn(float x, float y);
@@ -216,6 +222,7 @@ private:
     const MaterialRegistry& mats_;
     GasGrid* gas_ = nullptr;
     BodySystem* bodies_ = nullptr;
+    const ElectricSystem* electric_ = nullptr;
     std::uint64_t seed_;
     std::uint64_t tick_ = 0;
     PlayerParams params_;

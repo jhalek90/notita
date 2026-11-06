@@ -78,6 +78,10 @@ bool App::init() {
     player_ = std::make_unique<Player>(*world_, mats_, opts_.seed);
     player_->setGas(gas_.get());
     player_->setBodies(bodies_.get());
+    electric_ = std::make_unique<ElectricSystem>(*world_, mats_, pool_.get(), opts_.seed);
+    for (const auto& e : electric_->errors()) SDL_Log("electricity: %s", e.c_str());
+    materialErrors_.insert(materialErrors_.end(), electric_->errors().begin(), electric_->errors().end());
+    player_->setElectric(electric_.get());
     gen_ = std::make_unique<WorldGen>(mats_, opts_.seed);
     {
         StreamParams sp;
@@ -86,6 +90,7 @@ bool App::init() {
         stream_ = std::make_unique<Streamer>(*world_, mats_, *gen_, sp);
         stream_->attach(sim_.get(), gas_.get(), particles_.get(), bodies_.get());
         stream_->setPool(pool_.get());
+        stream_->setElectric(electric_.get());
     }
     if (!opts_.load.empty()) savePath_ = opts_.load;
     gasView_ = opts_.gasView;
@@ -329,6 +334,7 @@ void App::loadScene(const std::string& name) {
     }
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
+    if (electric_) electric_->clear();
     removePlayer(); // only the play scene has a player (F7 spawns one anywhere)
     float psx = 0, psy = 0;
     const bool play = name == "play" || name == "playground";
@@ -338,6 +344,7 @@ void App::loadScene(const std::string& name) {
     else if (name == "forge") scenes::forge(*world_, mats_, opts_.seed);
     else if (name == "thermal") scenes::thermalChurn(*world_, mats_, opts_.seed);
     else if (name == "gas") scenes::gasLab(*world_, mats_, opts_.seed);
+    else if (name == "circuits") scenes::circuits(*world_, mats_, opts_.seed);
     else if (name == "empty") world_->clear();
     else scenes::demo(*world_, mats_, opts_.seed);
     if (gas_) gas_->clear();
@@ -490,6 +497,26 @@ void App::handleEvent(const SDL_Event& e) {
         if (k == SDLK_F8) { saveWorld(); break; }
         if (k == SDLK_F9) { loadWorld(); break; }
         if (k == SDLK_F2) { creative_ = !creative_; break; }
+        // electricity: E flips the switch at the cursor (or the one in reach of the player),
+        // Y calls lightning down onto the cursor's column, M shows current / potential
+        if (k == SDLK_E) {
+            int sx, sy;
+            if (playerOn_) toggleSwitchAt(static_cast<int>(std::floor(player_->x())), static_cast<int>(std::floor(player_->centreY())));
+            else if (screenToWorld(mouseX_, mouseY_, sx, sy)) toggleSwitchAt(sx, sy);
+            break;
+        }
+        if (k == SDLK_Y) {
+            int sx, sy;
+            if (screenToWorld(mouseX_, mouseY_, sx, sy)) electric_->strike(sx, std::max(world_->minY(), static_cast<int>(camY_)));
+            break;
+        }
+        if (k == SDLK_M) {
+            if (showElectric_ && electricView_ == 0) electricView_ = 1;
+            else if (showElectric_) { showElectric_ = false; electricView_ = 0; }
+            else showElectric_ = true;
+            break;
+        }
+        if (k == SDLK_U) { loadScene("circuits"); break; }
         if (k == SDLK_T) {
             slowMo_ = !slowMo_;
             if (slowMo_) { savedSpeed_ = speed_; speed_ = 0.25f; } else speed_ = savedSpeed_;
@@ -529,7 +556,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_RIGHTBRACKET) brush_.radius = std::min(64, brush_.radius + 1);
         else if (k == SDLK_R) loadScene("demo");
         else if (k == SDLK_B) loadScene("churn");
-        else if (k == SDLK_C) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
+        else if (k == SDLK_C) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); electric_->clear(); }
         else if (k == SDLK_ESCAPE) running_ = false;
         else if (k >= SDLK_1 && k <= SDLK_9) {
             const auto id = static_cast<std::size_t>(k - SDLK_1 + 1);
@@ -609,6 +636,8 @@ void App::stepSim(double frameDt) {
 void App::tickSim() {
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->tick();
+    electric_->setPlayer(playerOn_ ? player_.get() : nullptr);
+    electric_->step();
     sim_->params().ambientRate = gas_->params().enabled ? 0.0f : sim_->params().ambientRate;
     bodies_->step();
     particles_->step();
@@ -750,7 +779,83 @@ void App::drawWorld() {
     drawParticles();
     drawGas();
     drawPlayer();
+    drawElectric();
     prepareLight();
+}
+
+void App::toggleSwitchAt(int x, int y) {
+    const int reach = playerOn_ ? static_cast<int>(player_->params().reach * 0.5f) : 12;
+    const int n = electric_->toggleSwitch(x, y, reach);
+    if (n > 0) SDL_Log("switch: %d px flipped", n);
+}
+
+void App::drawElectric() {
+    if (!showElectric_) return;
+    auto& px = renderer_.pixels();
+    const int cx0 = static_cast<int>(camX_), cy0 = static_cast<int>(camY_);
+    const float vmax = std::max(1.0f, electric_->maxPotential());
+    // darken everything so the wires stand out, then paint the field over the conductors
+    for (auto& p : px) p = mixColor(p, 0xFF000000u, 150);
+    for (int ccy = cy0 >> kChunkShift; ccy <= (cy0 + kViewH - 1) >> kChunkShift; ++ccy)
+        for (int ccx = cx0 >> kChunkShift; ccx <= (cx0 + kViewW - 1) >> kChunkShift; ++ccx) {
+            const float* v = electric_->potentials(ccx, ccy);
+            const float* cur = electric_->currents(ccx, ccy);
+            const Chunk* ch = world_->chunk(ccx, ccy);
+            if (!v || !cur || !ch) continue;
+            const int ox = ccx * kChunkSize, oy = ccy * kChunkSize;
+            const int x0 = std::max(ox, cx0), x1 = std::min(ox + kChunkSize, cx0 + kViewW);
+            const int y0 = std::max(oy, cy0), y1 = std::min(oy + kChunkSize, cy0 + kViewH);
+            for (int y = y0; y < y1; ++y)
+                for (int x = x0; x < x1; ++x) {
+                    const std::size_t l = static_cast<std::size_t>(((y - oy) << kChunkShift) | (x - ox));
+                    if (!electric_->conductive(ch->cells[l].material)) continue;
+                    std::uint32_t col;
+                    if (electricView_ == 0) {
+                        // current: dim blue (none) .. cyan .. white, log scale
+                        const float t = std::clamp(std::log10(1.0f + cur[l] * 100.0f) / 3.0f, 0.0f, 1.0f);
+                        const auto r = static_cast<std::uint32_t>(40.0f + 215.0f * t * t);
+                        const auto g = static_cast<std::uint32_t>(60.0f + 195.0f * t);
+                        const auto b = static_cast<std::uint32_t>(120.0f + 135.0f * std::sqrt(t));
+                        col = 0xFF000000u | (b << 16) | (g << 8) | r;
+                    } else {
+                        // potential: blue (0 V) .. magenta .. yellow (the highest)
+                        const float t = std::clamp(v[l] / vmax, -1.0f, 1.0f);
+                        const float a = std::abs(t);
+                        const auto r = static_cast<std::uint32_t>(60.0f + 195.0f * a);
+                        const auto g = static_cast<std::uint32_t>(t >= 0 ? 40.0f + 200.0f * a * a : 40.0f);
+                        const auto b = static_cast<std::uint32_t>(t >= 0 ? 200.0f * (1.0f - a) + 30.0f : 230.0f);
+                        col = 0xFF000000u | (std::min(b, 255u) << 16) | (std::min(g, 255u) << 8) | std::min(r, 255u);
+                    }
+                    px[static_cast<std::size_t>(y - cy0) * kViewW + (x - cx0)] = col;
+                }
+        }
+}
+
+void App::drawElectricUi() {
+    ImGui::Begin("Electricity", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    const ElectricStats& es = electric_->stats();
+    ElectricParams& ep = electric_->params();
+    ImGui::Checkbox("On", &ep.enabled);
+    ImGui::SameLine();
+    ImGui::Checkbox("Overlay (M)", &showElectric_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
+    ImGui::Combo("##ev", &electricView_, "Current\0Potential\0");
+    ImGui::Text("%d live px in %d circuits (%d solved, %d settling), %d CG iterations", es.nodes, es.components, es.solved,
+                es.unsettled, es.iterations);
+    ImGui::Text("power %.1f, heat %.1f, %d lamp px lit, max %.0f V, %.2f ms", es.power, es.heat, es.lit,
+                static_cast<double>(electric_->maxPotential()), es.ms);
+    ImGui::Text("sparks %d, splits %d (total %lld)", es.sparks, es.splits, es.splitsTotal);
+    if (playerOn_ && player_->stats().shock > 0.0f) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "shock! %.2f", player_->stats().shock);
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
+    ImGui::SliderFloat("Heat gain", &ep.heatGain, 0.0f, 2.0f, "%.2f");
+    ImGui::SliderInt("CG iterations / tick", &ep.maxIterations, 1, 512);
+    ImGui::SliderFloat("Spark power", &ep.sparkPower, 0.2f, 20.0f, "%.1f");
+    ImGui::SliderFloat("Electrolysis rate", &ep.splitRate, 0.0f, 0.002f, "%.5f");
+    ImGui::PopItemWidth();
+    ImGui::TextDisabled("E flip switch (cursor / in reach), Y lightning at the cursor's column");
+    ImGui::TextDisabled("U circuits scene: volt cell -> wire -> lamp / heater -> ground rod");
+    ImGui::End();
 }
 
 void App::drawGas() {
@@ -933,7 +1038,9 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("World (O)")) loadScene("world");
     ImGui::SameLine();
-    if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); }
+    if (ImGui::Button("Circuits (U)")) loadScene("circuits");
+    ImGui::SameLine();
+    if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); electric_->clear(); }
     ImGui::PopItemWidth();
     ImGui::End();
 
@@ -942,6 +1049,7 @@ void App::drawUi() {
     drawPhase4Ui();
     drawPlayerUi();
     drawWorldUi();
+    drawElectricUi();
 
     // debug overlay
     const ImGuiIO& io = ImGui::GetIO();

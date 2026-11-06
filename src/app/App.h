@@ -7,6 +7,7 @@
 #include "light/Lighting.h"
 #include "sim/Bodies.h"
 #include "sim/Brush.h"
+#include "sim/Electric.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Particles.h"
@@ -80,6 +81,9 @@ private:
     bool saveWorld();
     bool loadWorld();
     void drawWorldUi();
+    void drawElectricUi();
+    void drawElectric();   // the current / potential overlay (M)
+    void toggleSwitchAt(int x, int y);
     void drawWorld();
     void drawUi();
     void drawOverlays(const Viewport& vp);
@@ -105,6 +109,9 @@ private:
     std::unique_ptr<GasGrid> gas_;
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<BodySystem> bodies_;
+    std::unique_ptr<ElectricSystem> electric_;
+    bool showElectric_ = false; // overlay: current (bright) or potential (hue)
+    int  electricView_ = 0;     // 0 current, 1 potential
     bool particlesOn_ = true;
     std::unique_ptr<Player> player_;
     std::unique_ptr<WorldGen> gen_;

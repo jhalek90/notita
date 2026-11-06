@@ -105,7 +105,7 @@ void App::initLighting() {
     useGpuLight_ = gpuLight_ && !opts_.lightCpu;
 }
 
-bool App::lightingActive() const { return lightOn_ && !showTemp_ && gasView_ == 0; }
+bool App::lightingActive() const { return lightOn_ && !showTemp_ && !showElectric_ && gasView_ == 0; }
 
 void App::prepareLight() {
     if (!lightingActive() || matEmit_.empty()) return;

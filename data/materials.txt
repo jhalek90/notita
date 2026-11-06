@@ -47,6 +47,15 @@
 #   opacity         how much light one pixel blocks (0..1); default solids/powders 0.6,
 #                   liquids 0.15, gases 0.03, air and flames 0
 #   noise           per-pixel hue jitter on top of color_variation (0..0.5, default 0)
+# Electricity (all optional; see src/sim/Electric.h):
+#   electric        electric conductance per pixel (0..1; missing = insulator)
+#   electric_role   source | drain | thermopile | lamp | lamp_lit | plate | switch
+#   voltage         source: its potential (default 100); thermopile: volts per degree above ambient
+#   toggles_into    lamp <-> lamp_lit and switch open <-> closed (same kind and mass)
+#   splits_into     electrolysis: "a, b" - two touching cells carrying current become a and b
+#                   (mass(a) + mass(b) must be twice this material's mass)
+#   split_current   current through a pixel needed to split it (default 0.05)
+#   electric_heat   share of the electric power that turns into heat (0..1, default 1)
 # Unknown keys are kept for later phases.
 
 [bedrock]
@@ -104,6 +113,9 @@ freezes_into = frost
 miscible = etchant, tincture
 color = #3a78c8c8
 color_variation = 8
+electric = 0.02
+splits_into = hydrogen, oxygen
+split_current = 0.01
 
 [lamp_oil]
 kind = liquid
@@ -147,6 +159,7 @@ heat_capacity = 0.4
 color = #c4ccd6
 color_variation = 12
 opacity = 0.9
+electric = 0.5
 
 [steam]
 kind = gas
@@ -307,6 +320,7 @@ boils_into = etchant_fume
 latent_heat = 6
 color = #9be04ad0
 color_variation = 12
+electric = 0.25
 
 [etchant_fume]
 label = Etchant fume
@@ -328,6 +342,10 @@ conductivity = 0.85
 heat_capacity = 0.5
 color = #8a8f96
 color_variation = 10
+electric = 0.6
+melt_point = 1500
+melts_into = molten_iron
+latent_heat = 6
 
 [rust_salt]
 label = Rust salt
@@ -372,6 +390,7 @@ latent_heat = 8
 miscible = water
 color = #5a2a8ad8
 color_variation = 10
+electric = 0.03
 
 # Phase 6: terrain for the generated world
 [loam]
@@ -393,3 +412,195 @@ conductivity = 0.08
 heat_capacity = 1.1
 color = #4f7d34
 color_variation = 20
+
+# ---- electricity ----
+[copper]
+label = Copper wire
+kind = solid
+density = 8900
+hardness = 1.0
+conductivity = 0.9
+heat_capacity = 0.4
+electric = 1.0
+melt_point = 1085
+melts_into = molten_copper
+latent_heat = 4
+color = #c8783e
+color_variation = 10
+
+[molten_copper]
+label = Molten copper
+kind = liquid
+density = 8000
+viscosity = 0.3
+spread = 3
+conductivity = 0.8
+heat_capacity = 0.45
+spawn_temp = 1150
+freeze_point = 1040
+freezes_into = copper
+electric = 0.7
+emissive = 0.6, 0.25, 0.06
+opacity = 0.9
+color = #ffa050
+color_variation = 12
+
+[molten_iron]
+label = Molten iron
+kind = liquid
+density = 7000
+viscosity = 0.4
+spread = 3
+conductivity = 0.7
+heat_capacity = 0.55
+spawn_temp = 1550
+freeze_point = 1450
+freezes_into = iron
+electric = 0.4
+emissive = 0.7, 0.3, 0.08
+opacity = 0.9
+color = #ffb060
+color_variation = 12
+
+[heater_coil]
+label = Heater coil
+kind = solid
+density = 8400
+hardness = 1.0
+conductivity = 0.5
+heat_capacity = 0.6
+electric = 0.05
+color = #8a6a5a
+color_variation = 8
+
+[volt_cell]
+label = Volt cell
+kind = solid
+density = 3000
+hardness = 1.0
+conductivity = 0.2
+heat_capacity = 2.0
+electric_role = source
+voltage = 100
+color = #3f8f52
+color_variation = 6
+
+[ground_rod]
+label = Ground rod
+kind = solid
+density = 7000
+hardness = 1.0
+conductivity = 0.4
+electric_role = drain
+color = #4c4c5c
+color_variation = 6
+
+[thermopile]
+label = Thermopile
+kind = solid
+density = 6000
+hardness = 1.0
+conductivity = 0.6
+heat_capacity = 1.5
+electric_role = thermopile
+voltage = 0.1
+color = #7a4a6a
+color_variation = 6
+
+[switch_open]
+label = Switch (open)
+kind = solid
+density = 3000
+hardness = 1.0
+electric_role = switch
+toggles_into = switch_closed
+color = #a04a32
+color_variation = 4
+
+[switch_closed]
+label = Switch (closed)
+kind = solid
+density = 3000
+hardness = 1.0
+electric = 1.0
+electric_role = switch
+toggles_into = switch_open
+color = #4aae5a
+color_variation = 4
+
+[press_plate]
+label = Pressure plate
+kind = solid
+density = 4000
+hardness = 1.0
+electric = 1.0
+electric_role = plate
+color = #a8a070
+color_variation = 4
+
+[lamp]
+label = Lamp
+kind = solid
+density = 2500
+hardness = 1.0
+electric = 0.02
+electric_heat = 0.1
+electric_role = lamp
+toggles_into = lamp_lit
+opacity = 0.3
+color = #6c6a52
+color_variation = 4
+
+[lamp_lit]
+label = Lamp (lit)
+kind = solid
+density = 2500
+hardness = 1.0
+electric = 0.02
+electric_heat = 0.1
+electric_role = lamp_lit
+toggles_into = lamp
+opacity = 0.3
+emissive = 2.4, 2.0, 1.1
+color = #fff0b0
+color_variation = 4
+
+[spark]
+label = Spark
+kind = special
+density = 0.2
+conductivity = 0.6
+heat_capacity = 0.2
+spawn_temp = 1600
+life_min = 2
+life_max = 7
+emissive = 1.5, 1.8, 2.6
+color = #dce8ff
+
+[oxygen]
+label = Oxygen
+kind = gas
+density = 1.43
+spread = 3
+conductivity = 0.08
+heat_capacity = 0.3
+opacity = 0.0
+color = #b8d8f840
+
+[brine]
+label = Brine
+kind = liquid
+density = 1100
+spread = 6
+conductivity = 0.3
+heat_capacity = 1.0
+boil_point = 102
+boils_into = steam
+latent_heat = 8
+freeze_point = -8
+freezes_into = frost
+miscible = water
+electric = 0.3
+splits_into = hydrogen, oxygen
+color = #4a88b8c8
+color_variation = 8

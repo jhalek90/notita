@@ -1,6 +1,7 @@
 #include "Player.h"
 
 #include "Bodies.h"
+#include "Electric.h"
 #include "GasGrid.h"
 
 #include <algorithm>
@@ -263,6 +264,23 @@ void Player::step(const PlayerInput& in) {
 
     unstick();
     sense();
+
+    // electricity: current through the liquid around the player
+    stats_.shock = 0.0f;
+    if (electric_ && submerged_ > 0.0f && electric_->fieldChunks() > 0) {
+        const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
+        float worst = 0.0f;
+        for (int r = 0; r < P.height; ++r) {
+            const int wy = iy - P.height + r, hw = halfWidthAt(r);
+            for (int wx = ix - hw; wx <= ix + hw; ++wx) {
+                const Cell* c = world_.cell(wx, wy);
+                if (!c || mats_[c->material].kind != MaterialKind::Liquid) continue;
+                worst = std::max(worst, electric_->currentAt(wx, wy));
+            }
+        }
+        stats_.shock = worst;
+        if (worst >= P.shockCurrent) hurt(P.shockDamage * std::min(worst, 3.0f));
+    }
 
     // ---- forces (px/tick^2) ----
     float ax = 0.0f, ay = P.gravity;

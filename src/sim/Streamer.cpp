@@ -78,7 +78,7 @@ long long cellsMass(const Chunk& c, const MaterialRegistry& mats) {
 } // namespace
 
 std::size_t StoredChunk::bytes() const {
-    std::size_t n = cells.size() + gas.size() + particles.size() * sizeof(Particle);
+    std::size_t n = cells.size() + gas.size() + electric.size() + particles.size() * sizeof(Particle);
     for (const BodyState& b : bodies) n += b.pixels.size() * sizeof(BodyPixel) + sizeof(BodyState);
     return n;
 }
@@ -110,6 +110,7 @@ void Streamer::reset(int cx0, int cy0) {
     if (bodies_) bodies_->clear();
     if (particles_) particles_->clear();
     if (gas_) gas_->clear();
+    if (electric_) electric_->clear();
     std::vector<ChunkCoord> all;
     for (const Chunk* c : world_.chunks()) all.push_back(c->coord);
     for (const ChunkCoord& c : all) world_.removeChunk(c.x, c.y);
@@ -206,6 +207,7 @@ StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas) {
             sc.gas = encodeGas(g);
         }
     }
+    if (electric_) electric_->exportChunk(c.coord.x, c.coord.y, sc.electric, false);
     sc.next = c.nextRect.peek();
     sc.heatNext = c.heatNext.load(std::memory_order_relaxed);
     return sc;
@@ -222,6 +224,7 @@ void Streamer::sleepChunk(int cx, int cy, StoredChunk&& encoded) {
             sc.gas = encodeGas(g);
         }
     }
+    if (electric_) electric_->exportChunk(cx, cy, sc.electric, true);
     const int x0 = c->originX(), y0 = c->originY();
     if (particles_) {
         particles_->extractIn(x0, y0, x0 + kChunkSize, y0 + kChunkSize, sc.particles);
@@ -260,6 +263,7 @@ void Streamer::wakeChunk(int cx, int cy, bool decoded) {
         if (particles_ && !sc.particles.empty()) particles_->add(sc.particles.data(), sc.particles.size());
         if (bodies_)
             for (const BodyState& b : sc.bodies) bodies_->restore(b);
+        if (electric_ && !sc.electric.empty()) electric_->importChunk(cx, cy, sc.electric);
         storedMass_ -= sc.mass;
         storedGas_ -= sc.gasMass;
         stats_.storeBytes -= std::min(stats_.storeBytes, sc.bytes());
@@ -346,6 +350,14 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
     w.f64(gas_ ? gas_->sourceHeat() : 0.0);
     w.f64(gas_ ? gas_->latentHeat() : 0.0);
     w.i64(generatedMass_);
+    // v2: electricity
+    {
+        const std::vector<ElectricStrike> none;
+        const auto& strikes = electric_ ? electric_->pendingStrikes() : none;
+        w.u64(electric_ ? electric_->tickCount() : 0);
+        w.u32(static_cast<std::uint32_t>(strikes.size()));
+        for (const ElectricStrike& st : strikes) { w.i32(st.x); w.i32(st.y); }
+    }
 
     // player + inventory
     w.u8(extras.hasPlayer ? 1 : 0);
@@ -377,6 +389,7 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
         for (const Particle& p : sc.particles) writeParticle(w, p);
         w.u32(static_cast<std::uint32_t>(sc.bodies.size()));
         for (const BodyState& b : sc.bodies) writeBody(w, b);
+        w.blob(sc.electric); // v2
     };
     for (const Chunk* c : live) writeChunk(c->coord.x, c->coord.y, encodeLive(*c, false));
     for (const auto& [key, sc] : store_)
@@ -445,6 +458,20 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
     }
     const double lost = r.f64(), source = r.f64(), latent = r.f64();
     const long long generated = r.i64();
+    // v2: the electric tick and pending lightning (v1 saves: the sim's tick, nothing pending)
+    std::uint64_t electricTick = simTick;
+    std::vector<ElectricStrike> strikes;
+    if (version >= 2) {
+        electricTick = r.u64();
+        const std::uint32_t n = r.u32();
+        if (!r.ok() || n > 4096) return fail("bad electric state");
+        for (std::uint32_t k = 0; k < n; ++k) {
+            ElectricStrike st;
+            st.x = r.i32();
+            st.y = r.i32();
+            strikes.push_back(st);
+        }
+    }
 
     extras = SaveExtras{};
     extras.hasPlayer = r.u8() != 0;
@@ -504,6 +531,7 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
             sc.bodies.push_back(readBody(r, remap));
             sc.mass += bodyMass(sc.bodies.back(), mats_);
         }
+        if (version >= 2) sc.electric = r.blob();
         if (!r.ok()) return fail("truncated chunk");
         mass += sc.mass;
         gasMass += sc.gasMass;
@@ -540,6 +568,10 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         gas_->setHeatTotals(lost, source, latent);
     }
     if (particles_) particles_->setTickCount(partTick);
+    if (electric_) {
+        electric_->setTickCount(electricTick);
+        electric_->setPendingStrikes(strikes);
+    }
     generatedMass_ = generated;
     if (bodies_) bodies_->setTickCount(bodyTick);
     stats_.storeChunks = store_.size();

@@ -216,6 +216,86 @@ void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     rect("water", 506, 330, 614, 351);
 }
 
+void circuits(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
+    Rng rng(seed);
+    w.clear();
+    PinnedScene pin{w, mats};
+    const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
+    auto id = [&](const char* n) { return mats.idOf(n); };
+    const int vx = X + std::max(0, (W - 640) / 2), vy = Y + std::max(0, H - 360);
+    auto rect = [&](const char* m, int x0, int y0, int x1, int y1) {
+        if (id(m) != kEmpty) fillSpawn(w, mats, id(m), vx + x0, vy + y0, vx + x1, vy + y1, rng);
+    };
+    fillRect(w, id("bedrock"), X, Y + H - 8, X + W - 1, Y + H - 1, rng); // floor
+
+    // 1. a lamp behind a switch
+    rect("volt_cell", 20, 60, 27, 75);
+    rect("copper", 28, 66, 90, 67);
+    rect("switch_open", 91, 63, 96, 70);
+    rect("copper", 97, 66, 150, 67);
+    rect("lamp", 151, 58, 162, 75);
+    rect("copper", 163, 66, 220, 67);
+    rect("ground_rod", 221, 60, 228, 75);
+
+    // 2. a heater coil under a glass pot of water, behind a switch (thick leads stay cool)
+    rect("volt_cell", 300, 56, 307, 75);
+    rect("copper", 308, 64, 340, 66);
+    rect("switch_open", 341, 61, 346, 69);
+    rect("copper", 347, 64, 380, 66);
+    rect("heater_coil", 381, 64, 392, 66);
+    rect("copper", 393, 64, 430, 66);
+    rect("ground_rod", 431, 56, 438, 75);
+    rect("glass", 376, 61, 397, 63);  // pot floor, right on the coil
+    rect("glass", 376, 36, 378, 60);
+    rect("glass", 395, 36, 397, 60);
+    rect("water", 379, 40, 394, 60);
+
+    // 3. a brine tank with an electrode at each end: hydrogen and oxygen bubble off
+    rect("slate", 20, 230, 140, 233);
+    rect("slate", 20, 180, 23, 229);
+    rect("slate", 137, 180, 140, 229);
+    rect("volt_cell", 24, 186, 27, 229);
+    rect("ground_rod", 133, 186, 136, 229);
+    rect("brine", 28, 192, 132, 229);
+
+    // 4. a thermopile sitting in magma: once it is hot it lights a lamp (iron lead: it gets hot)
+    rect("basalt", 300, 240, 380, 243);
+    rect("basalt", 300, 205, 303, 239);
+    rect("basalt", 377, 205, 380, 239);
+    rect("magma", 304, 222, 376, 239);
+    rect("thermopile", 330, 208, 345, 221);
+    rect("iron", 337, 180, 338, 207);
+    rect("copper", 339, 180, 420, 181);
+    rect("lamp", 421, 172, 430, 189);
+    rect("copper", 431, 180, 470, 181);
+    rect("ground_rod", 471, 172, 476, 189);
+
+    // 5. a pressure plate on the floor: drop something on it to light the lamp
+    rect("volt_cell", 20, 330, 27, 351);
+    rect("copper", 28, 350, 90, 351);
+    rect("press_plate", 91, 350, 104, 351);
+    rect("copper", 105, 350, 150, 351);
+    rect("lamp", 151, 336, 160, 351);
+    rect("copper", 161, 350, 200, 351);
+    rect("ground_rod", 201, 330, 208, 351);
+    rect("slate", 84, 300, 111, 303); // a ledge with sand on it, to dig or push off
+    rect("sand", 90, 290, 105, 299);
+
+    // 6. a thin fuse wire behind a switch, timber above it to catch the sparks
+    rect("volt_cell", 300, 330, 305, 351);
+    rect("copper", 306, 348, 320, 348);
+    rect("switch_open", 321, 345, 324, 351);
+    rect("copper", 325, 348, 345, 348);
+    rect("ground_rod", 346, 330, 351, 351);
+    rect("timber", 306, 338, 345, 340);
+
+    // 7. an iron mast by a pool, for lightning (Y)
+    rect("iron", 560, 200, 562, 351);
+    rect("slate", 576, 318, 579, 351);
+    rect("slate", 636, 318, 639, 351);
+    rect("water", 580, 324, 635, 351);
+}
+
 void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     Rng rng(seed);
     w.clear();

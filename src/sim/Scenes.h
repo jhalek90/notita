@@ -46,6 +46,13 @@ void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 // Writes the player's spawn point (feet) if asked.
 void playground(World& w, const MaterialRegistry& mats, std::uint64_t seed, float* spawnX = nullptr, float* spawnY = nullptr);
 
+// Electricity playground: a lamp behind a switch, a heater under a glass pot of
+// water, a brine tank splitting into hydrogen and oxygen, a thermopile on magma
+// that lights a lamp once it is hot, a pressure plate (drop something on it), a
+// thin fuse wire behind a switch with timber over it for the sparks, and an
+// iron mast by a pool for lightning. (E toggles switches, Y calls lightning.)
+void circuits(World& w, const MaterialRegistry& mats, std::uint64_t seed);
+
 // Turn the world upside down (sustained benchmark load: everything falls again).
 void flipVertical(World& w);
 

@@ -22,6 +22,7 @@
 // inventory.
 #include "Bodies.h"
 #include "ChunkCodec.h"
+#include "Electric.h"
 #include "GasGrid.h"
 #include "Particles.h"
 #include "Player.h"
@@ -39,13 +40,15 @@ namespace notita {
 
 class Simulator;
 
-constexpr std::uint32_t kSaveVersion = 1;
+// 2: electricity (per-chunk potentials, the electric tick and pending lightning)
+constexpr std::uint32_t kSaveVersion = 2;
 
 struct StoredChunk {
     std::vector<std::uint8_t> cells;  // encodeCells
     std::vector<std::uint8_t> gas;    // encodeGas (empty = no grid)
     std::vector<Particle> particles;
     std::vector<BodyState> bodies;
+    std::vector<std::uint8_t> electric; // ElectricSystem::exportChunk (empty = no potentials)
     DirtyRect next;                   // the chunk's pending dirty rect
     bool heatNext = false;
     long long mass = 0;               // cells (no body stamps) + particles + bodies
@@ -84,6 +87,7 @@ public:
     void attach(Simulator* sim, GasGrid* gas, ParticleSystem* particles, BodySystem* bodies);
     // Generating, encoding and decoding chunks are pure per chunk: with a pool they run in parallel.
     void setPool(ThreadPool* pool) { pool_ = pool; }
+    void setElectric(ElectricSystem* electric) { electric_ = electric; }
 
     // Drops everything (world chunks, store, grid, particles, bodies) and
     // opens the window centred on the chunk holding (x, y).
@@ -131,6 +135,7 @@ private:
     GasGrid* gas_ = nullptr;
     ParticleSystem* particles_ = nullptr;
     BodySystem* bodies_ = nullptr;
+    ElectricSystem* electric_ = nullptr;
     ThreadPool* pool_ = nullptr;
     std::map<std::uint64_t, StoredChunk> store_; // ordered: deterministic saves
     int wcx_ = 0, wcy_ = 0;
