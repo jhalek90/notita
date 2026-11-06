@@ -421,6 +421,34 @@ TEST_CASE(electric_determinism_independent_of_thread_count) {
     CHECK(run(1) == run(6));
 }
 
+TEST_CASE(electric_big_circuit_is_independent_of_thread_count) {
+    // a brine slab big enough for the block-parallel solver path
+    auto run = [](int threads, float& probe) {
+        Bench b(threads, false);
+        for (int y = 40; y < 130; ++y) {
+            b.put(20, y, "volt_cell");
+            b.put(231, y, "ground_rod");
+            for (int x = 21; x <= 230; ++x) b.put(x, y, "brine");
+        }
+        b.line(20, 231, 130, "copper"); // a floor that also shorts the bottom row
+        b.line(19, 232, 131, "iron");
+        b.elec->params().maxIterations = 20;
+        b.elec->params().splitRate = 0.0005f;
+        b.ticks(40);
+        CHECK(b.elec->stats().nodes > 18000);
+        probe = b.elec->potentialAt(120, 130); // the copper floor
+        std::printf("  %d threads: %d nodes %d comps %d unsettled %d it, resid %.3f, mat %d\n", threads, b.elec->stats().nodes, b.elec->stats().components,
+                    b.elec->stats().unsettled, b.elec->stats().iterations, b.elec->stats().residual, b.world.material(120, 130));
+        return b.world.hash() ^ static_cast<std::uint64_t>(b.elec->stats().splitsTotal);
+    };
+    float p1 = 0, p6 = 0;
+    const std::uint64_t h1 = run(1, p1), h6 = run(6, p6);
+    CHECK(h1 == h6);
+    CHECK(p1 == p6);
+    std::printf("  probe %.3f\n", p1);
+    CHECK(p1 > 0.0f && p1 < 100.0f);
+}
+
 TEST_CASE(electric_potentials_survive_sleep_wake_and_save_load) {
     // a streamed world (no grid, no bodies): a circuit in the sky above the terrain
     struct Rig {

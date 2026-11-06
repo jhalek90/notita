@@ -193,7 +193,7 @@ constexpr std::size_t kBlock = 4096;
 constexpr std::size_t kBigComponent = 3 * kBlock;
 
 struct SumMax {
-    double sum = 0.0, max = 0.0;
+    double sum = 0.0, max = 0.0, sum2 = 0.0, sum3 = 0.0;
 };
 
 template <class F>
@@ -208,7 +208,7 @@ SumMax overBlocks(ThreadPool* pool, std::size_t m, F&& f) {
     if (pool) pool->parallelFor(nb, job);
     else for (int k = 0; k < nb; ++k) job(k);
     SumMax s;
-    for (const SumMax& p : part) { s.sum += p.sum; s.max = std::max(s.max, p.max); }
+    for (const SumMax& p : part) { s.sum += p.sum; s.max = std::max(s.max, p.max); s.sum2 += p.sum2; s.sum3 += p.sum3; }
     return s;
 }
 
@@ -233,6 +233,7 @@ void ElectricSystem::step() {
     const int ncomp = static_cast<int>(compStart_.size()) - 1;
     compIters_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 0);
     compResidual_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 0.0);
+    compImbalance_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 0.0);
     compSettled_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 1);
     // small components side by side (each serial), big ones one by one with parallel blocks
     std::vector<int> small, big;
@@ -245,6 +246,7 @@ void ElectricSystem::step() {
         stats_.solved += compIters_[k] > 0 || compResidual_[k] > 0.0 ? 1 : 0;
         stats_.iterations += compIters_[k];
         stats_.residual = std::max(stats_.residual, compResidual_[k]);
+        stats_.imbalance = std::max(stats_.imbalance, compImbalance_[k]);
         stats_.unsettled += compSettled_[k] ? 0 : 1;
     }
     nodeComp_.resize(npx_.size());
@@ -400,6 +402,95 @@ void ElectricSystem::flood() {
     }
 }
 
+// Two-level correction for big pieces: plain CG removes local errors fast but a smooth,
+// piece-wide error (a switch closing between a 100 V half and a 0 V half) takes thousands of
+// iterations. Free pixels are grouped into 8x8 px aggregates; the Galerkin coarse system
+// (P^T A P, P piecewise constant) is solved for the residual and the correction is added back.
+// It minimises the energy error over the coarse space, so it never makes the field worse.
+// Serial and in node order: deterministic.
+void ElectricSystem::coarseCorrect(int comp) {
+    const std::size_t b = static_cast<std::size_t>(compStart_[comp]), e = static_cast<std::size_t>(compStart_[comp + 1]);
+    const std::size_t m = e - b;
+    const int aw = (gw_ + 7) >> 3, ah = (gh_ + 7) >> 3;
+    std::vector<std::int32_t> aggOf(static_cast<std::size_t>(aw) * ah, -1);
+    std::vector<std::int32_t> agg(m, -1);
+    std::vector<std::int32_t> aggBlock;
+    for (std::size_t k = 0; k < m; ++k) {
+        const std::size_t i = b + k;
+        if (nfixed_[i]) continue;
+        const std::size_t blk = static_cast<std::size_t>(ny_[i] >> 3) * aw + static_cast<std::size_t>(nx_[i] >> 3);
+        if (aggOf[blk] < 0) { aggOf[blk] = static_cast<std::int32_t>(aggBlock.size()); aggBlock.push_back(static_cast<std::int32_t>(blk)); }
+        agg[k] = aggOf[blk];
+    }
+    const std::size_t na = aggBlock.size();
+    if (na < 2) return;
+    std::vector<double> cd(na, 0.0), rc(na, 0.0), ce(na, 0.0), cr(na), cz(na), cp(na), cq(na);
+    std::vector<std::int32_t> cnb(na * 4, -1);
+    std::vector<double> cge(na * 4, 0.0);
+    const double* v = nv_.data();
+    for (std::size_t k = 0; k < m; ++k) {
+        const std::int32_t a = agg[k];
+        if (a < 0) continue;
+        const std::size_t i = b + k;
+        double res = 0.0;
+        for (int t = 0; t < 4; ++t) {
+            const std::int32_t j = nnb_[i * 4 + t];
+            if (j < 0) continue;
+            const double g = nge_[i * 4 + t];
+            cd[static_cast<std::size_t>(a)] += g;
+            res += g * (v[j] - v[i]);
+            const std::int32_t aj = agg[static_cast<std::size_t>(j) - b];
+            if (aj < 0) continue;                                // a terminal: Dirichlet, diagonal only
+            if (aj == a) { cd[static_cast<std::size_t>(a)] -= g; continue; } // inside the aggregate
+            const int bi = aggBlock[static_cast<std::size_t>(a)], bj = aggBlock[static_cast<std::size_t>(aj)];
+            const int dx = bj % aw - bi % aw, dy = bj / aw - bi / aw;
+            const int dir = dx > 0 ? 0 : dx < 0 ? 1 : dy > 0 ? 2 : 3;
+            cnb[static_cast<std::size_t>(a) * 4 + dir] = aj;
+            cge[static_cast<std::size_t>(a) * 4 + dir] += g;
+        }
+        rc[static_cast<std::size_t>(a)] += res;
+    }
+    // coarse PCG for A_c ce = rc (A_c = diag cd, off-diagonal -cge)
+    double rz = 0.0, rr0 = 0.0;
+    for (std::size_t a = 0; a < na; ++a) {
+        if (cd[a] <= 0.0) cd[a] = 1.0;
+        cr[a] = rc[a];
+        cz[a] = cr[a] / cd[a];
+        cp[a] = cz[a];
+        rz += cr[a] * cz[a];
+        rr0 += cr[a] * cr[a];
+    }
+    if (rr0 <= 0.0) return;
+    for (int it = 0; it < params_.coarseIterations; ++it) {
+        double pq = 0.0;
+        for (std::size_t a = 0; a < na; ++a) {
+            double s = cd[a] * cp[a];
+            for (int t = 0; t < 4; ++t) {
+                const std::int32_t c = cnb[a * 4 + t];
+                if (c >= 0) s -= cge[a * 4 + t] * cp[static_cast<std::size_t>(c)];
+            }
+            cq[a] = s;
+            pq += cp[a] * s;
+        }
+        if (pq <= 0.0) break;
+        const double alpha = rz / pq;
+        double rzNew = 0.0, rr = 0.0;
+        for (std::size_t a = 0; a < na; ++a) {
+            ce[a] += alpha * cp[a];
+            cr[a] -= alpha * cq[a];
+            cz[a] = cr[a] / cd[a];
+            rzNew += cr[a] * cz[a];
+            rr += cr[a] * cr[a];
+        }
+        if (rr <= 1e-12 * rr0) break;
+        const double beta = rzNew / rz;
+        rz = rzNew;
+        for (std::size_t a = 0; a < na; ++a) cp[a] = cz[a] + beta * cp[a];
+    }
+    for (std::size_t k = 0; k < m; ++k)
+        if (agg[k] >= 0) nv_[b + k] += ce[static_cast<std::size_t>(agg[k])];
+}
+
 void ElectricSystem::solve(int comp, bool parallel) {
     ThreadPool* pool = parallel ? pool_ : nullptr;
     const std::size_t b = static_cast<std::size_t>(compStart_[comp]), e = static_cast<std::size_t>(compStart_[comp + 1]);
@@ -419,7 +510,7 @@ void ElectricSystem::solve(int comp, bool parallel) {
     const std::size_t m = e - b;
     double* r = nr_.data() + b; double* z = nz_.data() + b; double* p = np_.data() + b;
     double* q = nq_.data() + b; double* dg = nd_.data() + b;
-    SumMax s0 = overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
+    auto initPass = [&]() { return overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
         SumMax s;
         for (std::size_t k = k0; k < k1; ++k) {
             const std::size_t i = b + k;
@@ -436,13 +527,29 @@ void ElectricSystem::solve(int comp, bool parallel) {
             p[k] = z[k];
             s.sum += r[k] * z[k];
             s.max = std::max(s.max, std::abs(z[k]));
+            s.sum2 += r[k];                           // net current into the free nodes (0 when solved)
+            if (nfixed_[i]) s.sum3 += 0.5 * std::abs(res); // current through the terminals
         }
         return s;
-    });
+    }); };
+    SumMax s0 = initPass();
     double rz = s0.sum, worst = s0.max;
+    // Local corrections alone can look tiny while the field is globally off (a fresh wire that
+    // starts at the source voltage everywhere): Kirchhoff over the whole piece must hold too.
+    double current = std::max(s0.sum3, 1e-9);
+    double imbalance = std::abs(s0.sum2);
+    auto close = [&](double local, double global) { return worst <= local && imbalance <= global * current; };
+    if (static_cast<int>(m) >= params_.coarseMin && !close(tol, 1e-3) && !close(settledTol, params_.settled)) {
+        coarseCorrect(comp);
+        s0 = initPass();
+        rz = s0.sum;
+        worst = s0.max;
+        current = std::max(s0.sum3, 1e-9);
+        imbalance = std::abs(s0.sum2);
+    }
     int it = 0;
     // already close enough (warm start, nothing much changed): keep it, don't polish
-    for (; it < params_.maxIterations && worst > tol && !(it == 0 && worst <= settledTol); ++it) {
+    for (; it < params_.maxIterations && !close(tol, 1e-3) && !(it == 0 && close(settledTol, params_.settled)); ++it) {
         const double pq = overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
             SumMax s;
             for (std::size_t k = k0; k < k1; ++k) {
@@ -468,12 +575,14 @@ void ElectricSystem::solve(int comp, bool parallel) {
                 z[k] = r[k] / dg[k];
                 s.sum += r[k] * z[k];
                 s.max = std::max(s.max, std::abs(z[k]));
+                s.sum2 += r[k];
             }
             return s;
         });
         const double beta = s1.sum / rz;
         rz = s1.sum;
         worst = s1.max;
+        imbalance = std::abs(s1.sum2);
         overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
             for (std::size_t k = k0; k < k1; ++k) p[k] = z[k] + beta * p[k];
             return SumMax{};
@@ -481,7 +590,8 @@ void ElectricSystem::solve(int comp, bool parallel) {
     }
     compIters_[static_cast<std::size_t>(comp)] = it;
     compResidual_[static_cast<std::size_t>(comp)] = worst;
-    compSettled_[static_cast<std::size_t>(comp)] = worst <= settledTol ? 1 : 0;
+    compImbalance_[static_cast<std::size_t>(comp)] = imbalance / current;
+    compSettled_[static_cast<std::size_t>(comp)] = close(settledTol, 2.0 * params_.settled) ? 1 : 0;
 }
 
 void ElectricSystem::effects() {

@@ -362,6 +362,9 @@ ElectricResult runElectric(const MaterialRegistry& mats, const ReactionTable& re
         r.unsettled += es.unsettled;
         r.lit += es.lit;
         r.splits = es.splitsTotal;
+        if (std::getenv("NOTITA_BENCH_ELECTRIC_TRACE") && t % 30 == 0)
+            std::printf("  t %d: %d comps, %d unsettled, %d it, residual %.4f V, imbalance %.4f\n", t, es.components, es.unsettled,
+                        es.iterations, es.residual, es.imbalance);
     }
     r.massOk = world.totalMass(mats) == mass0;
     auto stats = [](std::vector<double> v, double& mean, double& p95, double& mx) {

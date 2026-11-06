@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Electricity: a potential field over connected conductive pixels.
 //
 // Every tick ElectricSystem::step (after Simulator::tick, before
@@ -87,6 +87,8 @@ struct ElectricProps {
 struct ElectricParams {
     bool  enabled = true;
     int   maxIterations = 64;     // CG iterations per component per tick (warm start carries the rest over)
+    int   coarseMin = 256;        // pieces with this many pixels or more also get a coarse-grid correction
+    int   coarseIterations = 300; // CG iterations on the coarse (8x8 px aggregate) system
     float tolerance = 1e-4f;      // stop when no pixel would move by more than this share of the voltage span
     float settled = 0.01f;        // effects (heat, lamps, sparks, electrolysis) wait until the solve is this close:
                                   // a half-solved potential has fake steep steps that would melt wires.
@@ -115,6 +117,7 @@ struct ElectricStats {
     int unsettled = 0;      // ...of which still converging (their effects wait)
     int iterations = 0;     // CG iterations this tick (all components)
     double residual = 0.0;  // worst remaining correction, volts
+    double imbalance = 0.0; // worst net current into a piece's free pixels, as a share of its terminal current
     double power = 0.0;     // total power dissipated this tick
     double heat = 0.0;      // energy (degrees * capacity) added as heat this tick
     int lit = 0;            // lit lamp pixels
@@ -172,6 +175,7 @@ private:
     Cell* gridCell(int gx, int gy) const;
     void flood();
     void solve(int comp, bool parallel);
+    void coarseCorrect(int comp);
     void split(Cell& a, Cell& b, const ElectricProps& p);
     void effects();
     void runStrike(const Strike& s);
@@ -217,7 +221,7 @@ private:
     std::vector<int> compIters_;
     std::vector<std::uint8_t> compSettled_;
     std::vector<std::int32_t> nodeComp_;
-    std::vector<double> compResidual_;
+    std::vector<double> compResidual_, compImbalance_;
     std::vector<std::uint32_t> mark_;
     std::uint32_t markStamp_ = 0;
 };

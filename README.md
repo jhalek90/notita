@@ -434,13 +434,20 @@ What the current does, all through the sim:
   sends a bolt of sparks down to the first solid or liquid, heats the hit and
   discharges through the conductors it hits, nearest first.
 
-Effects wait until a piece's solve has settled (to 1% of its voltage span),
-so a half-solved field never melts a wire. A piece that is still within that
-1% at the start of a tick isn't solved again, and pixels that join a circuit
-start at their neighbours' potential, so small changes (a bubble moving
-through brine) stay cheap. Big pieces solve over fixed blocks of nodes with
-the thread pool, small ones side by side; the block split doesn't depend on
-the thread count, so results don't either. The potentials (the warm start)
+Plain CG removes local errors quickly but a smooth, piece-wide error (a
+switch closing between a 100 V half and a 0 V half) would take thousands of
+iterations, so pieces of 256 pixels or more first get a two-level correction:
+free pixels are grouped into 8x8 px aggregates and the Galerkin coarse system
+is solved for the residual. A piece counts as settled when no pixel would
+move by more than 1% of its voltage span and the net current into its free
+pixels is within 1-2% of the current through its terminals (Kirchhoff over
+the whole piece; local corrections alone can look tiny while the field is
+far off). Effects wait until then, so a half-solved field never melts a wire.
+A piece that starts a tick already settled isn't solved again, and pixels that
+join a circuit start at their neighbours' potential, so small changes (a
+bubble moving through brine) stay cheap. Big pieces solve over fixed blocks of
+nodes with the thread pool, small ones side by side; the block split doesn't
+depend on the thread count, so results don't either. The potentials (the warm start)
 travel with their chunks through streaming sleep/wake and save files (save
 format version 2; version 1 saves still load).
 
@@ -517,10 +524,11 @@ pixels; mass stays exact.
 
 | scene | 1 thread | 4 threads | 16 threads | electric step (16 thr) |
 | --- | --- | --- | --- | --- |
-| electric | 27.6 | 10.7 | 9.3 | 8.2 ms mean, 11.4 p95, 54 max (a switch flip) |
+| electric | 25.8 | 11.8 | 9.6 | 8.6 ms mean, 9.9 p95, 65 max (a switch flip) |
 
-At 16 threads the step splits into find + flood 3.8 ms, solve 1.3 ms
-(2.6 CG iterations a tick on average) and effects 2.7 ms. The circuits scene
+At 16 threads the step splits into find + flood 3.9 ms, solve 1.5 ms
+(0.6 CG iterations a tick on average; a switch flip costs one coarse solve and
+a few dozen iterations) and effects 2.7 ms. The circuits scene
 (7k live pixels) costs about 1 ms a tick. Details are in the #473 note.
 
 Phase 6 row: the streamed world with everything on (16x8 awake chunks like
