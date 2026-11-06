@@ -280,7 +280,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_RIGHTBRACKET) brush_.radius = std::min(64, brush_.radius + 1);
         else if (k == SDLK_R) loadScene("demo");
         else if (k == SDLK_B) loadScene("churn");
-        else if (k == SDLK_C) world_->clear();
+        else if (k == SDLK_C) { world_->clear(); gas_->clear(); }
         else if (k == SDLK_ESCAPE) running_ = false;
         else if (k >= SDLK_1 && k <= SDLK_9) {
             const auto id = static_cast<std::size_t>(k - SDLK_1 + 1);
@@ -562,7 +562,7 @@ void App::drawUi() {
     ImGui::SameLine();
     if (ImGui::Button("Gas lab (V)")) loadScene("gas");
     ImGui::SameLine();
-    if (ImGui::Button("Clear (C)")) world_->clear();
+    if (ImGui::Button("Clear (C)")) { world_->clear(); gas_->clear(); }
     ImGui::PopItemWidth();
     ImGui::End();
 
