@@ -307,8 +307,8 @@ void App::drawUi() {
     const SimStats& st = sim_->stats();
 
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Sandbox");
+    ImGui::Begin("Sandbox", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
     ImGui::SeparatorText("Material");
     for (std::size_t i = 1; i < mats_.size(); ++i) {
         const Material& m = mats_[static_cast<MaterialId>(i)];
@@ -344,6 +344,7 @@ void App::drawUi() {
     if (ImGui::Button("Full churn (B)")) loadScene("churn");
     ImGui::SameLine();
     if (ImGui::Button("Clear (C)")) world_->clear();
+    ImGui::PopItemWidth();
     ImGui::End();
 
     // debug overlay
@@ -378,7 +379,7 @@ void App::drawUi() {
 
 bool App::writeScreenshot(const std::string& path) const {
     // 32-bit BMP of the sim view (what the renderer uploads)
-    const auto& px = const_cast<Renderer&>(renderer_).pixels();
+    const auto& px = renderer_.pixels();
     const int w = kViewW, h = kViewH;
     std::ofstream f(path, std::ios::binary);
     if (!f) return false;

@@ -188,9 +188,12 @@ private:
         if (m.spread <= 0) return;
         if (m.viscosity > 0.0f && rng_.unit() < m.viscosity) {
             // too thick to move this tick; stay awake if there is somewhere to go
-            Cell* l = at(x - 1, y);
-            Cell* r = at(x + 1, y);
-            if ((l && canDisplace(m, mats_[l->material], 0)) || (r && canDisplace(m, mats_[r->material], 0))) wake(x, y);
+            auto canGo = [&](const Cell* n) {
+                if (!n) return false;
+                const Material& nm = mats_[n->material];
+                return canDisplace(m, nm, 0) || (nm.kind == MaterialKind::Liquid && nm.density < m.density);
+            };
+            if (canGo(at(x - 1, y)) || canGo(at(x + 1, y))) wake(x, y);
             return;
         }
         for (int k = 0; k < 2; ++k, d = -d) {

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // The sandbox app: window, input, fixed 60 Hz sim loop, brushes, rendering
 // and the ImGui panels (sandbox tools + debug overlay).
 #include "Renderer.h"
@@ -81,7 +81,7 @@ private:
     Viewport viewport_;
 
     // UI / debug
-    bool showUi_ = true, showChunks_ = false, showDirty_ = true;
+    bool showUi_ = true, showChunks_ = false, showDirty_ = false;
     std::array<float, 120> tickHistory_{};
     int tickHistoryPos_ = 0;
     double frameMs_ = 0.0;

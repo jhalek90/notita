@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // Presents the sim view: a CPU-filled RGBA8 buffer is uploaded to a GPU
 // texture each frame and blitted (nearest filter, integer scale when it fits)
 // onto the swapchain. Later phases add GPU passes (gas grid, heat, lighting)
@@ -23,6 +23,7 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
     std::vector<std::uint32_t>& pixels() { return pixels_; } // RGBA8, row-major
+    const std::vector<std::uint32_t>& pixels() const { return pixels_; }
 
     // Fit the sim view into a target of tw x th pixels.
     Viewport fit(std::uint32_t tw, std::uint32_t th) const;
