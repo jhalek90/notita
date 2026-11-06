@@ -196,9 +196,9 @@ bool Streamer::follow(float x, float y) {
     return true;
 }
 
-StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas) {
+StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas, std::vector<std::uint8_t>* cells) {
     StoredChunk sc;
-    sc.cells = encodeCells(c, &mats_);
+    sc.cells = cells ? std::move(*cells) : encodeCells(c, &mats_);
     sc.mass = cellsMass(c, mats_);
     if (gas_) {
         GasGrid::ChunkCells g;
@@ -393,7 +393,10 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
         for (const BodyState& b : sc.bodies) writeBody(w, b);
         w.blob(sc.electric); // v2
     };
-    for (const Chunk* c : live) writeChunk(c->coord.x, c->coord.y, encodeLive(*c, false));
+    // the cell blobs sample every textured pixel's texture (#481): encode them in parallel
+    std::vector<std::vector<std::uint8_t>> liveCells(live.size());
+    parallel(static_cast<int>(live.size()), [&](int i) { liveCells[static_cast<std::size_t>(i)] = encodeCells(*live[static_cast<std::size_t>(i)], &mats_); });
+    for (std::size_t i = 0; i < live.size(); ++i) writeChunk(live[i]->coord.x, live[i]->coord.y, encodeLive(*live[i], false, &liveCells[i]));
     for (const auto& [key, sc] : store_)
         writeChunk(static_cast<std::int32_t>(key >> 32), static_cast<std::int32_t>(key & 0xFFFFFFFFu), sc);
     // the awake window's particles and bodies
@@ -502,6 +505,10 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
     const std::uint32_t nc = r.u32();
     if (!r.ok()) return fail("truncated save");
     std::map<std::uint64_t, StoredChunk> store;
+    // same ids as now: a current-format cell blob can be kept as it is (re-encoding
+    // it would sample every pixel's texture twice for nothing)
+    bool sameIds = true;
+    for (std::size_t i = 0; i < remap.size(); ++i) sameIds = sameIds && remap[i] == static_cast<MaterialId>(i);
     long long mass = 0;
     std::int64_t gasMass = 0;
     Chunk scratch;
@@ -515,8 +522,10 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         const std::vector<std::uint8_t> gas = r.blob();
         if (!r.ok()) return fail("truncated chunk");
         scratch.coord = {cx, cy};
-        if (!decodeCells(cells, scratch, &remap, &mats_)) return fail("corrupt chunk cells");
-        sc.cells = encodeCells(scratch, &mats_);
+        const bool keep = sameIds && !cells.empty() && cells[0] == kCellBlobFormat;
+        // kept blobs only need the materials (for the mass), not the texture reference
+        if (!decodeCells(cells, scratch, &remap, keep ? nullptr : &mats_)) return fail("corrupt chunk cells");
+        sc.cells = keep ? cells : encodeCells(scratch, &mats_);
         sc.mass = cellsMass(scratch, mats_);
         if (!gas.empty() && curSpecies > 0) {
             GasGrid::ChunkCells g;

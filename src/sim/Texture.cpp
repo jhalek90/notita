@@ -25,8 +25,10 @@ std::uint32_t mix32(std::uint32_t h) {
     h ^= h >> 16;
     return h;
 }
+// one mix per lattice point: this runs a few dozen times per pixel and per chunk
+// encode/decode, so it has to be cheap (looks only, no statistics needed)
 std::uint32_t hash3(int x, int y, std::uint32_t s) {
-    return mix32(static_cast<std::uint32_t>(x) * 0x9E3779B1u ^ mix32(static_cast<std::uint32_t>(y) * 0x85EBCA77u + s));
+    return mix32(static_cast<std::uint32_t>(x) * 0x8DA6B343u ^ static_cast<std::uint32_t>(y) * 0xD8163841u ^ s * 0xCB1AB31Fu);
 }
 float unit(std::uint32_t h) { return static_cast<float>(h >> 8) * (1.0f / 16777216.0f); }
 
@@ -232,9 +234,15 @@ bool parseTexture(const std::unordered_map<std::string, std::string>& extra, std
     return true;
 }
 
-std::uint8_t textureShade(const MaterialTexture& t, int x, int y, std::uint32_t seed, int along) {
+std::uint32_t textureSeed(const std::string& name) {
+    std::uint32_t h = 2166136261u;
+    for (unsigned char c : name) { h ^= c; h *= 16777619u; }
+    return h;
+}
+
+std::uint8_t textureShade(const MaterialTexture& t, int x, int y, int along) {
     if (!t.enabled) return terrainShade(x, y);
-    const std::uint32_t s = mix32(seed * 0x27D4EB2Fu + 0x165667B1u);
+    const std::uint32_t s = mix32(t.seed * 0x27D4EB2Fu + 0x165667B1u);
     const std::uint32_t hp = hash3(x, y, s);           // per-pixel randomness
     const std::uint32_t hq = hash3(x, y, s ^ 0xA511E9B3u);
     const float fx = static_cast<float>(x), fy = static_cast<float>(y);
@@ -247,7 +255,7 @@ std::uint8_t textureShade(const MaterialTexture& t, int x, int y, std::uint32_t 
     switch (t.pattern) {
     case TexturePattern::Clumps:
         f = fbm(fx / sc, fy / sc, s);
-        b = (fbm(fx / (sc * 0.5f), fy / (sc * 0.5f), s + 1u, 2) - 0.5f) * 2.0f;
+        b = (vnoise(fx / (sc * 0.5f), fy / (sc * 0.5f), s + 1u) - 0.5f) * 2.4f;
         break;
     case TexturePattern::Speckle:
         f = unit(hq);
@@ -320,10 +328,9 @@ std::uint8_t textureShade(const MaterialTexture& t, int x, int y, std::uint32_t 
     // a second noise so they wander and stop instead of closing into rings
     if (t.veinScale > 0.0f && t.veinWidth > 0.0f &&
         fbm(fx / (t.veinScale * 1.5f), fy / (t.veinScale * 1.5f), s + 9u, 2) > 0.47f) {
-        auto field = [&](float px, float py) {
-            const float w = t.warp > 0.0f ? (fbm(px / (t.veinScale * 0.7f), py / (t.veinScale * 0.7f), s + 7u, 2) - 0.5f) * t.warp : 0.0f;
-            return fbm((px + w) / t.veinScale, (py - w) / t.veinScale, s + 8u, 2);
-        };
+        // the warp is smooth, so one sample serves the gradient's neighbours too
+        const float w = t.warp > 0.0f ? (fbm(fx / (t.veinScale * 0.7f), fy / (t.veinScale * 0.7f), s + 7u, 2) - 0.5f) * t.warp : 0.0f;
+        auto field = [&](float px, float py) { return fbm((px + w) / t.veinScale, (py - w) / t.veinScale, s + 8u, 2); };
         const float v0 = field(fx, fy);
         const float gx = field(fx + 1.0f, fy) - v0, gy = field(fx, fy + 1.0f) - v0;
         const float grad = std::sqrt(gx * gx + gy * gy);
@@ -337,8 +344,13 @@ std::uint8_t textureShade(const MaterialTexture& t, int x, int y, std::uint32_t 
     if (t.pebbleChance > 0.0f) {
         const int g = t.pebbleSize * 4 + 2;
         const int gx = static_cast<int>(std::floor(fx / static_cast<float>(g))), gy = static_cast<int>(std::floor(fy / static_cast<float>(g)));
-        for (int dj = -1; dj <= 1; ++dj)
-            for (int di = -1; di <= 1; ++di) {
+        // a pebble reaches at most 0.7 size past its own cell: only look next door near the edge
+        const float reach = static_cast<float>(t.pebbleSize) * 0.7f + 1.0f;
+        const float lx = fx - static_cast<float>(gx * g), ly = fy - static_cast<float>(gy * g);
+        const int di0 = lx < reach ? -1 : 0, di1 = lx >= static_cast<float>(g) - reach ? 1 : 0;
+        const int dj0 = ly < reach ? -1 : 0, dj1 = ly >= static_cast<float>(g) - reach ? 1 : 0;
+        for (int dj = dj0; dj <= dj1; ++dj)
+            for (int di = di0; di <= di1; ++di) {
                 const std::uint32_t ph = hash3(gx + di, gy + dj, s ^ 0x9E3779B9u);
                 if (unit(ph) >= t.pebbleChance) continue;
                 const float px = (static_cast<float>(gx + di) + 0.25f + 0.5f * unit(mix32(ph))) * static_cast<float>(g);

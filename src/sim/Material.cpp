@@ -493,6 +493,7 @@ bool MaterialRegistry::loadFromString(std::string_view text, std::vector<std::st
         {
             std::string err;
             if (!parseTexture(cur.extra, cur.color, cur.texture, &err)) fail(sectionLine, "material '" + cur.name + "': " + err);
+            cur.texture.seed = textureSeed(cur.name);
         }
         auto it = byName_.find(cur.name);
         if (it != byName_.end()) {

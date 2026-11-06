@@ -103,6 +103,7 @@ Controls:
 | F5 | temperature view (hot pixels also glow in the normal view) |
 | F10 | old / new look and motion: liquids as pixels and the phase 1 powder/liquid rules vs smooth liquids and smooth grains ("Look & motion" panel has each switch) |
 | F11 | old / new flames: flame pixels vs flames as hot glowing gas on the gas grid ("Flames" panel has the knobs) |
+| F12 | surface relief and wet look on solids and powders on / off ("Textures" panel has the strength sliders) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
 | `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
@@ -525,6 +526,22 @@ where it doesn't glow, and a per-fuel tint (`flame_tint = r, g, b[, strength]`,
 e.g. hydrogen burns pale blue). The flames also emit light into the lighting
 pass. Without the shader they are drawn at sim resolution on the CPU. F11 or
 `--old-flames` switches back to flame pixels.
+
+## Textured materials
+
+Dirt, concrete, stone, wood, sand, metals and ash have per-pixel texture
+(#481). A material lists a small palette and a texture pattern in
+`data/materials.txt` (`palette`, `texture = clumps | speckle | strata | grain |
+brushed`, plus layers: `flecks`, `specks`, `pebbles`, `pores`, `panels`,
+`veins`, `knots`, `rings`; the key list is at the top of the file). The colour
+of a pixel is picked from world-space noise once, when the pixel is generated
+or placed, and stored in its `shade` byte, so it travels with the pixel when
+it falls, flows or flies instead of shimmering in place. Saves store shades
+against the texture, so untouched ground costs nothing; older saves still
+load, and their untouched ground takes the new textures. On screen, solids
+and powders get a hint of relief from their neighbours (lit top edges, shaded
+undersides) and go darker where liquid touches them (F12 or `--no-relief`
+turns that off).
 
 ## The showcase building
 

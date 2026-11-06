@@ -8,6 +8,7 @@
 #include "sim/WorldGen.h"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 
 using namespace notita;
@@ -135,6 +136,11 @@ TEST_CASE(texture_shade_is_a_pure_function_of_position) {
             CHECK_EQ(a.shadeAt(x, y), a.shadeAt(x, y));
         }
     }
+    // a mod that adds a material first shifts every id, but not the textures
+    MaterialRegistry shifted;
+    shifted.loadFromString(std::string("[moss]\nkind = solid\ncolor = #00ff00\n") + kTexMaterials);
+    CHECK(shifted.idOf("loam") != mats.idOf("loam"));
+    for (int i = 0; i < 500; ++i) CHECK_EQ(shifted.find("loam")->shadeAt(i, i * 3), mats.find("loam")->shadeAt(i, i * 3));
     // untextured materials keep the old per-position hash
     const Material& bedrock = *mats.find("bedrock");
     CHECK(!bedrock.texture.enabled);
@@ -193,7 +199,7 @@ TEST_CASE(texture_codec_stores_shades_against_the_texture) {
             plain += blob1.size();
             CHECK(decodeCells(blob, back, nullptr, &mats));
             CHECK(std::memcmp(c.cells, back.cells, sizeof c.cells) == 0);
-            CHECK(decodeCells(blob1, old, nullptr, &mats)); // an old blob still reads, with a registry too
+            CHECK(decodeCells(blob1, old));                  // format 1 still reads exactly
             CHECK(std::memcmp(c.cells, old.cells, sizeof c.cells) == 0);
             // a moved pixel keeps its shade through the codec
             std::swap(c.cells[5], c.cells[4000]);
@@ -202,6 +208,27 @@ TEST_CASE(texture_codec_stores_shades_against_the_texture) {
         }
     std::printf("  textured terrain: %zu bytes per chunk against the texture, %zu against the hash\n", textured / 16, plain / 16);
     CHECK(textured < plain);
+}
+
+TEST_CASE(texture_old_saves_get_textured_terrain) {
+    // a pre-#481 chunk: terrain with the hash shade, plus one pixel someone moved
+    MaterialRegistry mats = texMats();
+    const MaterialId slate = mats.idOf("slate");
+    Chunk c, back;
+    c.coord = back.coord = {3, -2};
+    for (int i = 0; i < kChunkCells; ++i) {
+        const int x = c.originX() + (i & kChunkMask), y = c.originY() + (i >> kChunkShift);
+        c.cells[i] = mats[slate].spawn(terrainShade(x, y));
+    }
+    c.cells[77].shade = static_cast<std::uint8_t>(terrainShade(c.originX() + 77, c.originY()) + 5);
+    const auto blob = encodeCells(c); // format 1
+    CHECK(decodeCells(blob, back, nullptr, &mats));
+    CHECK_EQ(back.cells[10].shade, mats[slate].shadeAt(c.originX() + 10, c.originY()));
+    CHECK_EQ(back.cells[3000].shade, mats[slate].shadeAt(c.originX() + (3000 & kChunkMask), c.originY() + (3000 >> kChunkShift)));
+    CHECK_EQ(back.cells[77].shade, c.cells[77].shade); // a moved pixel keeps the shade it had
+    // and the current format, read without a registry, still gives valid cells
+    CHECK(decodeCells(encodeCells(back, &mats), c));
+    CHECK_EQ(c.cells[500].material, slate);
 }
 
 TEST_CASE(texture_game_data_is_valid) {
@@ -217,5 +244,12 @@ TEST_CASE(texture_game_data_is_valid) {
     for (const char* n : {"loam", "concrete", "slate", "timber", "sand", "iron", "ash"}) {
         const Material* m = mats.find(n);
         CHECK(m && m->texture.enabled);
+        if (!m) continue;
+        // what a pixel costs at spawn / in the chunk codec (printed, not checked)
+        unsigned sum = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < 65536; ++i) sum += m->shadeAt((i & 255) - 128, (i >> 8) - 128);
+        const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count() / 65536.0;
+        std::printf("  %-9s %5.0f ns per pixel (%u)\n", n, ns, sum & 1);
     }
 }

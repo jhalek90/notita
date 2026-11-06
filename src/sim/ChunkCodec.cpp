@@ -85,7 +85,7 @@ bool rleDecode(ByteReader& in, std::uint8_t* data, std::size_t n) {
 namespace {
 
 constexpr std::uint8_t kCellFormat = 1;        // shade relative to terrainShade
-constexpr std::uint8_t kCellFormatTexture = 2; // #481: shade relative to the material texture
+constexpr std::uint8_t kCellFormatTexture = kCellBlobFormat; // #481: shade relative to the material texture
 
 // the shade the generator would give this pixel (the reference the shade plane is stored against)
 std::uint8_t refShade(const MaterialRegistry* mats, MaterialId m, int x, int y) {
@@ -227,7 +227,10 @@ bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std:
     const int ox = chunk.originX(), oy = chunk.originY();
     for (std::size_t i = 0; i < N; ++i) {
         const int x = ox + static_cast<int>(i & kChunkMask), y = oy + static_cast<int>(i >> kChunkShift);
-        chunk.cells[i].shade = static_cast<std::uint8_t>(b[i] + refShade(ref, chunk.cells[i].material, x, y));
+        // format 1 (before #481) with a registry: a zero delta is untouched terrain,
+        // which takes its material's texture now, so old saves get textured ground too
+        if (format == kCellFormat && mats && b[i] == 0) chunk.cells[i].shade = refShade(mats, chunk.cells[i].material, x, y);
+        else chunk.cells[i].shade = static_cast<std::uint8_t>(b[i] + refShade(ref, chunk.cells[i].material, x, y));
     }
     {
         std::array<float, N> t{};

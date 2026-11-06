@@ -73,8 +73,10 @@ bool rleDecode(ByteReader& in, std::uint8_t* data, std::size_t n);
 // remap: material id in the blob -> current id (null = identity). With mats the
 // shades are stored relative to each material's texture (format 2), without it
 // relative to terrainShade (format 1); both formats decode (format 2 without
-// mats falls back to terrainShade, so only the look changes).
+// mats falls back to terrainShade, so only the look changes). Format 1 read
+// with mats gives untouched terrain (zero delta) its material's texture.
 std::vector<std::uint8_t> encodeCells(const Chunk& chunk, const MaterialRegistry* mats = nullptr);
+constexpr std::uint8_t kCellBlobFormat = 2; // the first byte of a cell blob encoded with mats
 bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std::vector<MaterialId>* remap = nullptr,
                  const MaterialRegistry* mats = nullptr);
 

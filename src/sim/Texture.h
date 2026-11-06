@@ -32,6 +32,7 @@ enum class TexturePattern : std::uint8_t {
 
 struct MaterialTexture {
     bool enabled = false;
+    std::uint32_t seed = 0; // from the material name (stable when ids shift), set by the registry
     TexturePattern pattern = TexturePattern::Clumps;
     int colorCount = 0;
     std::array<std::uint32_t, 16> colors{};     // RGBA8 in memory order
@@ -69,8 +70,11 @@ bool parseTexture(const std::unordered_map<std::string, std::string>& extra, std
 std::uint8_t terrainShade(int x, int y);
 
 // The shade a pixel at (x, y) gets. `along` is the beam direction for the
-// grain patterns: 0 = along x (default), 1 = along y. seed = material id.
-std::uint8_t textureShade(const MaterialTexture& t, int x, int y, std::uint32_t seed, int along = 0);
+// grain patterns: 0 = along x (default), 1 = along y.
+std::uint8_t textureShade(const MaterialTexture& t, int x, int y, int along = 0);
+
+// FNV-1a of a material name, the texture seed.
+std::uint32_t textureSeed(const std::string& name);
 
 // Shade byte helpers for textured materials.
 constexpr std::uint8_t shadeSlot(std::uint8_t s) { return static_cast<std::uint8_t>(s >> 4); }

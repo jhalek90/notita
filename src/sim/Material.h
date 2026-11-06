@@ -118,7 +118,7 @@ struct Material {
     bool isFlame() const { return kind == MaterialKind::Special; }
     // The shade a freshly made pixel of this material gets at (x, y): its texture
     // sampled in world space (along = beam direction for grain, 0 = x, 1 = y).
-    std::uint8_t shadeAt(int x, int y, int along = 0) const { return textureShade(texture, x, y, id, along); }
+    std::uint8_t shadeAt(int x, int y, int along = 0) const { return textureShade(texture, x, y, along); }
     // a cell of this material with its spawn temperature
     Cell spawn(std::uint8_t shade) const {
         Cell c;

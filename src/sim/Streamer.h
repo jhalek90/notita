@@ -128,7 +128,8 @@ private:
     void sleepStrays();
     void wakeChunk(int cx, int cy, bool decoded);
     void parallel(int n, const std::function<void(int)>& fn);
-    StoredChunk encodeLive(const Chunk& c, bool clearGas);
+    // cells: the chunk's cell blob when it was already encoded (in parallel), else encoded here
+    StoredChunk encodeLive(const Chunk& c, bool clearGas, std::vector<std::uint8_t>* cells = nullptr);
     void forgetStore();
 
     World& world_;
