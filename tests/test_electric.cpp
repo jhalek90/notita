@@ -361,6 +361,35 @@ TEST_CASE(electric_electrolysis_keeps_mass) {
     CHECK_EQ(b.world.totalMass(b.mats), m0);
 }
 
+TEST_CASE(electric_electrolysis_keeps_mass_with_the_gas_grid) {
+    // the app's setup: gas the electrolysis makes goes into the grid, mass stays exact
+    Bench b(4, true);
+    GasGrid gas(b.world, b.mats, b.pool.get(), 7);
+    b.sim->setGasExchange(&gas);
+    const int x0 = 20, x1 = 100, yb = 150;
+    b.line(x0 - 1, x1 + 1, yb + 1, "slate");
+    for (int y = yb - 30; y <= yb; ++y) {
+        b.put(x0 - 1, y, "volt_cell");
+        b.put(x1 + 1, y, "ground_rod");
+        for (int x = x0; x <= x1; ++x) b.put(x, y, "brine");
+    }
+    scenes::pinRect(b.world, b.mats, 0, 0, 255, 191);
+    b.elec->params().splitRate = 0.002f;
+    auto mass = [&] { return b.world.totalMass(b.mats) * kGasMassOne + gas.massFixed(); };
+    const long long m0 = mass();
+    for (int i = 0; i < 200; ++i) {
+        b.sim->tick();
+        b.elec->step();
+        gas.step();
+    }
+    std::printf("  %lld splits, grid hydrogen %.1f, oxygen %.1f units\n", b.elec->stats().splitsTotal,
+                static_cast<double>(gas.massFixed(gas.speciesOf(b.id("hydrogen")))) / kGasMassOne,
+                static_cast<double>(gas.massFixed(gas.speciesOf(b.id("oxygen")))) / kGasMassOne);
+    CHECK(b.elec->stats().splitsTotal > 0);
+    CHECK(gas.massFixed(gas.speciesOf(b.id("hydrogen"))) > 0);
+    CHECK_EQ(mass(), m0);
+}
+
 TEST_CASE(electric_lightning_shocks_a_swimmer) {
     Bench b(4, true);
     const int x0 = 60, x1 = 160, yb = 150;
