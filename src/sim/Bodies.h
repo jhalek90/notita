@@ -13,10 +13,12 @@
 //
 // What holds a clump up: an anchor material (bedrock) or the world boundary
 // anywhere in the clump, or, for a clump that physics already put down
-// (Cell::aux == kAuxSettled on its pixels), anything solid or powder under
-// one of its pixels. Scene geometry is pinned (aux == kAuxPinned) and never
-// examined; what the brush places or what a state change creates (aux 0) is
-// live. Clumps are looked for in chunks that moved this tick, every
+// (Cell::aux == kAuxSettled on its pixels), something under one of its
+// pixels: powder, another body, or pinned scene geometry (aux == kAuxPinned,
+// never examined itself and never part of a clump, so a block stuck to the
+// side of a scene wall falls while one resting on a ledge may tip). What the
+// brush places or what a state change creates (aux 0) is live. Clumps are
+// looked for in chunks that moved since the last search, every
 // checkInterval ticks, so a settled world costs nothing.
 //
 // Mass: a body's pixels are counted by totalMass(); World::totalMass skips
@@ -157,6 +159,7 @@ private:
     std::unique_ptr<Impl> impl_;
     std::vector<std::uint8_t> visited_; // clump search scratch over the world's pixel box
     std::vector<std::uint8_t> pending_; // per chunk (world order): moved since the last clump search
+    std::vector<std::pair<int, int>> stack_; // flood fill scratch
     int nextId_ = 1;
 };
 

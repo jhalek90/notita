@@ -114,34 +114,43 @@ bool BodySystem::flood(int sx, int sy, Clump& out, bool ignorePins) {
     out.anchored = false;
     out.settled = true;
     out.resting = false;
-    std::vector<std::pair<int, int>> stack;
-    stack.emplace_back(sx, sy);
+    stack_.clear();
+    stack_.emplace_back(sx, sy);
     visited_[idx(sx, sy)] = 1;
     static constexpr int kDx[4] = {1, -1, 0, 0}, kDy[4] = {0, 0, 1, -1};
-    while (!stack.empty()) {
-        const auto [x, y] = stack.back();
-        stack.pop_back();
-        const Cell* c = world_.cell(x, y);
+    // neighbour lookup through the chunk of the last pixel (most steps stay inside it)
+    Chunk* ch = world_.chunkAtPixel(sx, sy);
+    auto cellAt = [&](int x, int y) -> const Cell* {
+        if (!ch || (x >> kChunkShift) != ch->coord.x || (y >> kChunkShift) != ch->coord.y) ch = world_.chunkAtPixel(x, y);
+        return ch ? &ch->at(x & kChunkMask, y & kChunkMask) : nullptr;
+    };
+    while (!stack_.empty()) {
+        const auto [x, y] = stack_.back();
+        stack_.pop_back();
+        const Cell* c = cellAt(x, y);
         out.x.push_back(x);
         out.y.push_back(y);
-        if (c->aux != kAuxSettled && c->aux != kAuxPinned) out.settled = false;
-        if (!ignorePins && c->aux == kAuxPinned) out.anchored = true; // pinned geometry holds what touches it
+        if (c->aux != kAuxSettled && (ignorePins || c->aux != kAuxPinned)) out.settled = false;
         for (int d = 0; d < 4; ++d) {
             const int nx = x + kDx[d], ny = y + kDy[d];
-            const Cell* n = world_.cell(nx, ny);
+            const Cell* n = cellAt(nx, ny);
             if (!n) { out.anchored = true; continue; } // the world edge is a wall
             const Material& nm = mats_[n->material];
-            // something under it that is not part of this clump: powder, a body's stamp or a soft solid
-            if (d == 2 && (nm.kind == MaterialKind::Powder ||
-                           (nm.kind == MaterialKind::Solid && ((n->flags & kFlagBody) || !nm.rigid))))
-                out.resting = true;
-            if (nm.kind != MaterialKind::Solid) continue;
+            if (nm.kind != MaterialKind::Solid) {
+                if (d == 2 && nm.kind == MaterialKind::Powder) out.resting = true;
+                continue;
+            }
             if (nm.anchor) { out.anchored = true; continue; }
-            if (n->flags & kFlagBody) continue;
-            if (!nm.rigid) { out.anchored = true; continue; }
+            // a body's stamp, a soft solid and pinned scene geometry are not part of the
+            // clump and don't hold it; they carry it when they are underneath
+            const bool pinned = !ignorePins && n->aux == kAuxPinned;
+            if ((n->flags & kFlagBody) || !nm.rigid || pinned) {
+                if (d == 2) out.resting = true;
+                continue;
+            }
             if (visited_[idx(nx, ny)]) continue;
             visited_[idx(nx, ny)] = 1;
-            stack.emplace_back(nx, ny);
+            stack_.emplace_back(nx, ny);
         }
     }
     return true;

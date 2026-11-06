@@ -1,4 +1,4 @@
-﻿// Headless benchmark: a 640x384 world (10x6 chunks, a bit more than the
+// Headless benchmark: a 640x384 world (10x6 chunks, a bit more than the
 // 640x360 view) completely full of moving material.
 //   churn:   70% of all pixels are a random mix of powders/liquids/gas that
 //            fall, sort and slosh (worst case right after the fill)
@@ -11,6 +11,11 @@
 //   gaslab:  the phase 3 gas playground (boiling, a fire, a hydrogen cave,
 //            heavy gas) with the gas grid on
 //   thermal+gas: thermal with the gas grid taking every gas it makes
+//   quarry:  the phase 4 playground (waterfall splashes, blending liquids,
+//            blocks falling off a burning post) with particles and bodies on
+//   thermal+p4: thermal+gas with splash particles and rigid bodies on (the
+//            frost/timber/iron clumps in the mix become bodies)
+//   flip+p4: flip (heat off) with splash particles on: every liquid landing hard splashes
 // Gas rows run the grid on the CPU reference solver (the GPU solver needs
 // SDL and a device; notita --gas-selftest times it). "grid ms" is the gas
 // grid step (coupling + solve) and is included in the mean.
@@ -18,6 +23,8 @@
 // has heat and the reaction table on.
 // Usage: notita_bench [ticks] [threads...]
 #include "script/ReactionScript.h"
+#include "sim/Bodies.h"
+#include "sim/Particles.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Reactions.h"
@@ -39,24 +46,36 @@ struct Result {
     double mean = 0, p50 = 0, p95 = 0, max = 0;
     double activeChunks = 0, heatChunks = 0, cells = 0, events = 0;
     double gridMs = 0, solveMs = 0, obstaclesMs = 0, pushMs = 0;
+    double particleMs = 0, bodyMs = 0, particles = 0, bodies = 0, bodyPixels = 0;
 };
 
-enum class Scene { Churn, Flip, Thermal, Conduct, GasLab };
+enum class Scene { Churn, Flip, Thermal, Conduct, GasLab, Quarry };
 
 Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Scene scene, bool heat, bool gas,
-                int threads, int ticks) {
+                bool phase4, int threads, int ticks) {
     World world(0, 0, 10, 6);
     ThreadPool pool(threads);
     Simulator sim(world, mats, &pool, 2026, &reactions);
     GasGrid grid(world, mats, &pool, 2026);
+    ParticleSystem particles(world, mats, &pool, 2026);
+    BodySystem bodies(world, mats, &particles, 2026);
     if (gas) {
         sim.setGasExchange(&grid);
         sim.params().ambientRate = 0.0f;
+    }
+    if (phase4) {
+        sim.setParticles(&particles);
+        if (gas) {
+            particles.setGas(&grid);
+            grid.setParticles(&particles);
+            bodies.setGas(&grid);
+        }
     }
     sim.params().heat = heat;
     sim.params().reactions = heat;
     if (scene == Scene::Thermal) scenes::thermalChurn(world, mats, 77);
     else if (scene == Scene::GasLab) scenes::gasLab(world, mats, 77);
+    else if (scene == Scene::Quarry) scenes::quarry(world, mats, 77);
     else if (scene == Scene::Conduct) {
         // solid slate at random temperatures: nothing moves, only heat flows
         Rng rng(77);
@@ -72,6 +91,10 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     Result r;
     auto step = [&] {
         sim.tick();
+        if (phase4) {
+            bodies.step();
+            particles.step();
+        }
         if (!gas) return 0.0;
         const auto t0 = std::chrono::steady_clock::now();
         grid.step();
@@ -82,8 +105,14 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
         if (flip && i % 90 == 0) scenes::flipVertical(world);
         const double g = step();
         const SimStats& st = sim.stats();
-        ms.push_back(st.tickMs + g);
+        const double p4 = phase4 ? particles.stats().stepMs + bodies.stats().stepMs : 0.0;
+        ms.push_back(st.tickMs + g + p4);
         r.gridMs += g;
+        r.particleMs += phase4 ? particles.stats().stepMs : 0.0;
+        r.bodyMs += phase4 ? bodies.stats().stepMs : 0.0;
+        r.particles += static_cast<double>(particles.count());
+        r.bodies += bodies.stats().bodies;
+        r.bodyPixels += bodies.stats().pixels;
         r.solveMs += grid.stats().solveMs;
         r.obstaclesMs += grid.stats().obstaclesMs;
         r.pushMs += grid.stats().pushMs;
@@ -107,6 +136,11 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     r.solveMs /= n;
     r.obstaclesMs /= n;
     r.pushMs /= n;
+    r.particleMs /= n;
+    r.bodyMs /= n;
+    r.particles /= n;
+    r.bodies /= n;
+    r.bodyPixels /= n;
     return r;
 }
 
@@ -129,24 +163,31 @@ int main(int argc, char** argv) {
     std::printf("%zu materials, %zu reactions; tick budget at 60 Hz: 16.67 ms\n\n", mats.size(), reactions.size());
     std::printf("%-11s %4s %4s %7s %8s %8s %8s %8s %7s %7s %10s %8s %8s %8s\n", "scene", "heat", "gas", "threads",
                 "mean ms", "p50 ms", "p95 ms", "max ms", "motion", "heat", "cells/tick", "events", "grid ms", "solve ms");
-    struct Row { const char* name; Scene scene; bool heat; bool gas; };
+    struct Row { const char* name; Scene scene; bool heat; bool gas; bool phase4; };
     const Row rows[] = {
-        {"churn", Scene::Churn, false, false},    {"churn", Scene::Churn, true, false},
-        {"flip", Scene::Flip, false, false},      {"flip", Scene::Flip, true, false},
-        {"thermal", Scene::Thermal, true, false}, {"conduct", Scene::Conduct, true, false},
-        {"thermal+gas", Scene::Thermal, true, true}, {"gaslab", Scene::GasLab, true, true},
+        {"churn", Scene::Churn, false, false, false},    {"churn", Scene::Churn, true, false, false},
+        {"flip", Scene::Flip, false, false, false},      {"flip", Scene::Flip, true, false, false},
+        {"thermal", Scene::Thermal, true, false, false}, {"conduct", Scene::Conduct, true, false, false},
+        {"thermal+gas", Scene::Thermal, true, true, false}, {"gaslab", Scene::GasLab, true, true, false},
+        {"quarry", Scene::Quarry, true, true, true},       {"thermal+p4", Scene::Thermal, true, true, true},
+        {"flip+p4", Scene::Flip, false, false, true},
     };
     const bool gasOnly = std::getenv("NOTITA_BENCH_GAS_ONLY") != nullptr;
+    const bool p4Only = std::getenv("NOTITA_BENCH_P4_ONLY") != nullptr;
     for (const Row& row : rows) {
         if (gasOnly && !row.gas) continue;
+        if (p4Only && !row.phase4) continue;
         for (int t : threadCounts) {
-            const Result r = runScene(mats, reactions, row.scene, row.heat, row.gas, t, ticks);
+            const Result r = runScene(mats, reactions, row.scene, row.heat, row.gas, row.phase4, t, ticks);
             std::printf("%-11s %4s %4s %7d %8.3f %8.3f %8.3f %8.3f %7.1f %7.1f %10.0f %8.0f %8.3f %8.3f\n", row.name,
                         row.heat ? "on" : "off", row.gas ? "on" : "off", t, r.mean, r.p50, r.p95, r.max, r.activeChunks,
                         r.heatChunks, r.cells, r.events, r.gridMs, r.solveMs);
             if (row.gas)
                 std::printf("%-11s   grid coupling: obstacles + gas pixels %.3f ms, push on pixels %.3f ms, rest %.3f ms\n", "",
                             r.obstaclesMs, r.pushMs, r.gridMs - r.solveMs - r.obstaclesMs - r.pushMs);
+            if (row.phase4)
+                std::printf("%-11s   particles %.3f ms (%.0f alive), bodies %.3f ms (%.1f bodies, %.0f px)\n", "",
+                            r.particleMs, r.particles, r.bodyMs, r.bodies, r.bodyPixels);
         }
     }
     std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"

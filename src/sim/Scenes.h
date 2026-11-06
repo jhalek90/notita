@@ -10,6 +10,8 @@ namespace notita::scenes {
 void fillRect(World& w, MaterialId m, int x0, int y0, int x1, int y1, Rng& rng, float temperature = kAmbientTemp);
 // Same, at the material's spawn temperature (magma comes out hot, frost cold).
 void fillSpawn(World& w, const MaterialRegistry& mats, MaterialId m, int x0, int y0, int x1, int y1, Rng& rng);
+// Marks the solid pixels in the rect as scene geometry (never a rigid body).
+void pinRect(World& w, const MaterialRegistry& mats, int x0, int y0, int x1, int y1);
 
 // A small playground: ledges, a basin, piles of powder and pools of liquid.
 void demo(World& w, const MaterialRegistry& mats, std::uint64_t seed);
@@ -32,6 +34,11 @@ void thermalChurn(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 // lights, and heavy murk
 // spilling into a pit.
 void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed);
+
+// Phase 4 playground: a waterfall splashing into a basin, tincture pouring into
+// water (they blend) beside oil onto water (they layer), slate blocks stacked on
+// a timber post that burns through, and a boulder teetering on a ledge.
+void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 
 // Turn the world upside down (sustained benchmark load: everything falls again).
 void flipVertical(World& w);

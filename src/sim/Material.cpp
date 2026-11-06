@@ -97,6 +97,7 @@ const char* kEmbeddedMaterials = R"MAT(
 [bedrock]
 kind = solid
 density = 5000
+anchor = true
 conductivity = 0.05
 heat_capacity = 2.0
 color = #2e2a33
@@ -142,6 +143,7 @@ boils_into = steam
 latent_heat = 8
 freeze_point = 0
 freezes_into = frost
+miscible = etchant, tincture
 color = #3a78c8c8
 color_variation = 8
 
@@ -379,6 +381,23 @@ flame_chance = 0.9
 burns_into = steam
 color = #e6ecff50
 color_variation = 6
+
+; ---- phase 4: liquids that blend ----
+
+[tincture]
+label = Tincture
+kind = liquid
+density = 1040
+viscosity = 0.02
+spread = 6
+conductivity = 0.3
+heat_capacity = 1.0
+boil_point = 105
+boils_into = steam
+latent_heat = 8
+miscible = water
+color = #5a2a8ad8
+color_variation = 10
 )MAT";
 
 } // namespace

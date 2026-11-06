@@ -1,5 +1,5 @@
 // notita sandbox entry point.
-//   notita.exe [--scene demo|forge|churn|thermal|empty] [--threads N] [--seed N]
+//   notita.exe [--scene demo|forge|churn|thermal|gas|quarry|empty] [--threads N] [--seed N]
 //              [--frames N [--screenshot out.bmp]] [--temp-view]
 //              [--gas-cpu] [--gas-view gas|velocity|pressure] [--gas-selftest]
 #include <SDL3/SDL_main.h>
