@@ -1,0 +1,88 @@
+# notita materials
+# Each [section] is one material. Material id 0 is always "air" (built in).
+# Keys:
+#   kind            solid | powder | liquid | gas
+#   label           name shown in the UI (default: section name)
+#   density         kg/m^3-ish; denser things sink through lighter fluids (air = 1.2)
+#   viscosity       liquids: 0 runs freely .. 1 barely spreads
+#   spread          liquids/gases: max sideways pixels per tick (0..16)
+#   slide           powders: chance per tick to slide off a pile (lower = steeper piles)
+#   gravity         gravity scale (default 1)
+#   max_fall        terminal speed in pixels per tick (1..16, default 12)
+#   conductivity    heat (phase 2)
+#   heat_capacity   heat (phase 2)
+#   color           #rrggbb or #rrggbbaa
+#   color_variation per-pixel brightness spread (0..128)
+# Unknown keys are kept for later phases (reactions, melting points, ...).
+
+[bedrock]
+kind = solid
+density = 5000
+color = #2e2a33
+color_variation = 6
+
+[slate]
+kind = solid
+density = 2700
+color = #6b6f78
+color_variation = 14
+
+[sand]
+kind = powder
+density = 1600
+slide = 0.85
+color = #d8b86a
+color_variation = 18
+
+[cinder_grit]
+kind = powder
+density = 2400
+slide = 0.45
+color = #7a5a4c
+color_variation = 22
+
+[water]
+kind = liquid
+density = 1000
+viscosity = 0.0
+spread = 6
+color = #3a78c8c8
+color_variation = 8
+
+[lamp_oil]
+kind = liquid
+density = 820
+viscosity = 0.15
+spread = 5
+color = #9c7a2ed0
+color_variation = 10
+
+[amber_syrup]
+kind = liquid
+density = 1400
+viscosity = 0.85
+spread = 2
+color = #c8661ce8
+color_variation = 10
+
+[quickmetal]
+kind = liquid
+density = 13500
+viscosity = 0.05
+spread = 5
+color = #c4ccd6
+color_variation = 12
+
+[steam]
+kind = gas
+density = 0.6
+spread = 2
+color = #c8d2dc90
+color_variation = 12
+
+[murk]
+kind = gas
+density = 3.5
+spread = 2
+color = #5c7a3ca0
+color_variation = 14

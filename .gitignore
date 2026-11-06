@@ -1,0 +1,6 @@
+/build*/
+/out/
+.vs/
+*.user
+imgui.ini
+build_deps.log
