@@ -163,6 +163,14 @@ struct ShowcasePainter {
         concrete(x0, -40, x1, -25);
         sign(t, cx, -39);
     }
+    // A street lamp: a timber pole with a little circuit on a concrete cap.
+    void lampPost(int x) {
+        beam(x - 1, -44, x + 1, -1);
+        concrete(x - 11, -46, x + 11, -45);
+        rect(id("volt_cell"), x - 11, -54, x - 6, -47);
+        rect(id("lamp"), x - 5, -52, x + 5, -47);
+        rect(id("ground_rod"), x + 6, -54, x + 11, -47);
+    }
     void tree(int x, int h, int r) {
         beam(x - 2, -h, x + 2, -1);
         beam(x - 1 - r / 2, -h + r / 2, x - 3, -h + r / 2 + 1);
@@ -318,6 +326,9 @@ void ShowcasePainter::paint() {
                 const MaterialId m = y > -130 ? grit : (y > -175 ? id("rust_salt", "sand") : sand);
                 put(x, y, m);
             }
+        // lights hung under the hopper, clear of the outlet
+        lampLine(-660, -622, -59, 1);
+        lampLine(-600, -562, -59, 1);
         // pressure plate in the floor under the outlet: sand on it lights the floor lamp
         rect(id("volt_cell"), -688, 0, -683, 9);
         rect(copper, -682, 0, -626, 1);
@@ -419,13 +430,14 @@ void ShowcasePainter::paint() {
         beam(606, -7, 655, -1);
         beam(572, -14, 640, -8);
         beam(590, -21, 622, -15);
-        // igniter: volt cell -> switch (flush in the floor, by the door) -> coil under the logs -> ground rod
+        // igniter: volt cell -> switch (flush in the floor, by the door) -> thick leads -> a thin
+        // fuse wire across the gap between the logs (it sparks and lights them) -> ground rod
         rect(id("volt_cell"), 533, 0, 538, 9);
         rect(copper, 539, 0, 540, 2);
         rect(id("switch_open"), 541, 0, 546, 2);
-        rect(copper, 547, 0, 584, 2);
-        rect(id("heater_coil"), 585, 0, 590, 2);     // right under the bottom log
-        rect(copper, 591, 0, 640, 2);
+        rect(copper, 547, 0, 591, 2);
+        rect(copper, 592, 0, 612, 0);
+        rect(copper, 613, 0, 640, 2);
         rect(id("ground_rod"), 641, 0, 646, 9);
         // the chimney: firebrick up to the slab, glass through the flue room, a stack over the roof
         rect(brick, 596, -96, 599, -67, H::Pinned, Panel);
@@ -438,7 +450,6 @@ void ShowcasePainter::paint() {
         rect(brick, 621, -296, 626, kRoof - 1, H::Pinned, Panel);
     }
     room("flue", 531, kF1, 690, kF1Floor - 1);
-    rect(id("frost", "glass"), 640, -125, 662, -109);   // a frost block by the warm flue
 
     // ---- gas room: a sealed chamber with hydrogen under its roof, an igniter and a blast door ----
     room("gas", -522, kF1, -203, kF1Floor - 1);
@@ -500,6 +511,10 @@ void ShowcasePainter::paint() {
             }
         circle(kEmpty, -1000, 150, 14);                       // a side pocket with lamp oil seeping in
         rect(oil, -1012, 152, -988, 164);
+        // a work light under the cavern roof
+        rect(id("volt_cell"), -930, 126, -925, 136);
+        rect(id("lamp"), -924, 132, -909, 137);
+        rect(id("ground_rod"), -908, 126, -903, 136);
         signBoard("CAVE", -820);
         tree(-760, 58, 20);
         tree(-980, 72, 24);
@@ -531,6 +546,9 @@ void ShowcasePainter::paint() {
         concrete(1085, -190, 1094, -1);
         air(1085, -32, 1094, -1);
         beam(866, -196, 1094, -191);
+        lampLine(878, 1082, -194, 2);                    // work lights under it, over the pond
+        lampPost(854);
+        lampPost(1106);
         // stepping pillars and a slate cliff with a beacon
         const int heights[] = {20, 40, 60, 84};
         for (int k = 0; k < 4; ++k) concrete(1120 + 40 * k, -heights[k], 1136 + 40 * k, -1);

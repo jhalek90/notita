@@ -411,7 +411,9 @@ void App::autoplay() {
     in.aimY = py;
     if (showcaseScene_) {
         // --scene showcase --autoplay: walk east from the lobby, up the stairs, through the
-        // gallery and into the demolition hall, then dig on east (streaming as it goes)
+        // gallery and into the demolition hall, then dig on east (streaming as it goes).
+        // With --at the player stays put (screenshots of one room with its switches closed).
+        if (opts_.at) return;
         in.move = 1.0f;
         in.jump = f > 200 && f % 60 < 10;
         if (f > 700) { in.tool = Tool::Dig; in.use = true; in.aimX = px + 12.0f; in.aimY = py; }
