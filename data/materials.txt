@@ -503,7 +503,7 @@ hardness = 1.0
 conductivity = 0.6
 heat_capacity = 1.5
 electric_role = thermopile
-voltage = 0.1
+voltage = 0.25
 color = #7a4a6a
 color_variation = 6
 

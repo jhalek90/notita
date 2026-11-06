@@ -84,6 +84,9 @@ private:
     void drawElectricUi();
     void drawElectric();   // the current / potential overlay (M)
     void toggleSwitchAt(int x, int y);
+    void autoCircuits();   // --scene circuits --autoplay: flips the switches, calls lightning (smoke runs)
+    bool circuitsScene_ = false;
+    int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();
     void drawOverlays(const Viewport& vp);

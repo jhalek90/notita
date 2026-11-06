@@ -347,6 +347,8 @@ void App::loadScene(const std::string& name) {
     else if (name == "circuits") scenes::circuits(*world_, mats_, opts_.seed);
     else if (name == "empty") world_->clear();
     else scenes::demo(*world_, mats_, opts_.seed);
+    circuitsScene_ = name == "circuits";
+    circuitTick_ = 0;
     if (gas_) gas_->clear();
     camX_ = static_cast<float>(world_->minX() + (world_->widthPx() - kViewW) / 2);
     camY_ = static_cast<float>(world_->minY() + world_->heightPx() - kViewH);
@@ -634,6 +636,7 @@ void App::stepSim(double frameDt) {
 }
 
 void App::tickSim() {
+    if (opts_.autoplay && circuitsScene_) autoCircuits();
     sim_->setParticles(particlesOn_ ? particles_.get() : nullptr);
     sim_->tick();
     electric_->setPlayer(playerOn_ ? player_.get() : nullptr);
@@ -783,6 +786,28 @@ void App::drawWorld() {
     prepareLight();
 }
 
+void App::autoCircuits() {
+    const int t = circuitTick_++;
+    if (t == 30) {
+        // close every switch in the scene (each call flips one connected switch)
+        const MaterialId open = mats_.idOf("switch_open");
+        for (int y = world_->minY(); y < world_->minY() + world_->heightPx(); ++y)
+            for (int x = world_->minX(); x < world_->minX() + world_->widthPx(); ++x)
+                if (world_->material(x, y) == open && open != kEmpty) electric_->toggleSwitch(x, y, 0);
+    }
+    if (t == 240) {
+        const int vx = world_->minX() + std::max(0, (world_->widthPx() - kViewW) / 2);
+        electric_->strike(vx + 600, world_->minY());
+        electric_->strike(vx + 561, world_->minY());
+    }
+    if (t % 120 == 0 && t > 0) {
+        const ElectricStats& es = electric_->stats();
+        SDL_Log("circuits t=%d: %d live px, %d circuits (%d settling), %d it, power %.1f, %d lamp px lit, sparks %d, splits %lld, max %.0f V, %.2f ms",
+                t, es.nodes, es.components, es.unsettled, es.iterations, es.power, es.lit, es.sparks, es.splitsTotal,
+                static_cast<double>(electric_->maxPotential()), es.ms);
+    }
+}
+
 void App::toggleSwitchAt(int x, int y) {
     const int reach = playerOn_ ? static_cast<int>(player_->params().reach * 0.5f) : 12;
     const int n = electric_->toggleSwitch(x, y, reach);
@@ -808,7 +833,7 @@ void App::drawElectric() {
             for (int y = y0; y < y1; ++y)
                 for (int x = x0; x < x1; ++x) {
                     const std::size_t l = static_cast<std::size_t>(((y - oy) << kChunkShift) | (x - ox));
-                    if (!electric_->conductive(ch->cells[l].material)) continue;
+                    if (!electric_->conductive(ch->cells[l].material) || std::isnan(v[l])) continue;
                     std::uint32_t col;
                     if (electricView_ == 0) {
                         // current: dim blue (none) .. cyan .. white, log scale

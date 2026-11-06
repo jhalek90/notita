@@ -39,6 +39,7 @@
 #include "World.h"
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -88,7 +89,9 @@ struct ElectricParams {
     int   maxIterations = 64;     // CG iterations per component per tick (warm start carries the rest over)
     float tolerance = 1e-4f;      // stop when no pixel would move by more than this share of the voltage span
     float settled = 0.01f;        // effects (heat, lamps, sparks, electrolysis) wait until the solve is this close:
-                                  // a half-solved potential has fake steep steps that would melt wires
+                                  // a half-solved potential has fake steep steps that would melt wires.
+                                  // A component that starts a tick this close isn't re-solved at all (small
+                                  // changes like one split pixel don't cost a full solve every tick)
     float heatGain = 0.2f;        // degrees * heat_capacity per unit of power
     float maxHeat = 250.0f;       // degrees per tick at most
     float lampPower = 0.02f;      // power through a lamp pixel that lights it (goes out below half)
@@ -118,6 +121,7 @@ struct ElectricStats {
     int sparks = 0, splits = 0, toggled = 0, strikes = 0; // this tick
     long long splitsTotal = 0;
     double ms = 0.0;
+    double floodMs = 0.0, solveMs = 0.0, effectsMs = 0.0;
 };
 
 class ElectricSystem {
@@ -157,8 +161,8 @@ public:
 
 private:
     struct Field {
-        std::vector<float> v, i;
-        Field() : v(kChunkCells, 0.0f), i(kChunkCells, 0.0f) {}
+        std::vector<float> v, i;  // v: NaN where the pixel had no potential
+        Field() : v(kChunkCells, std::numeric_limits<float>::quiet_NaN()), i(kChunkCells, 0.0f) {}
     };
     using Strike = ElectricStrike;
 
@@ -167,7 +171,8 @@ private:
     bool conductsAt(int gx, int gy) const;
     Cell* gridCell(int gx, int gy) const;
     void flood();
-    void solve(int comp);
+    void solve(int comp, bool parallel);
+    void split(Cell& a, Cell& b, const ElectricProps& p);
     void effects();
     void runStrike(const Strike& s);
     void heatCell(int gx, int gy, Cell& c, float energy);
@@ -195,6 +200,13 @@ private:
     std::vector<std::int32_t> nodeOf_;
     std::vector<std::vector<std::uint16_t>> seeds_, lit_;
     std::vector<std::int32_t> npx_;            // node -> grid pixel
+    std::vector<std::int16_t> nx_, ny_;        // node -> grid x, y
+    std::vector<std::uint8_t> nfresh_;         // node had no stored potential
+    std::vector<MaterialId> nmat_;             // node -> its material at the flood
+    std::vector<std::uint8_t> cond_;           // per grid pixel: conducts this step (filled by the parallel scan)
+    std::vector<std::uint8_t> serialRole_;     // per material: lamps / electrolysis need the serial effects pass
+    std::vector<std::uint8_t> chunkHas_;       // per grid chunk: has nodes this step
+    std::vector<Field*> fieldGrid_;            // per grid chunk: its field (when it has nodes)
     std::vector<float> ng_;                    // node conductance
     std::vector<std::int32_t> nnb_;            // 4 per node, -1 = none
     std::vector<float> nge_;                   // 4 per node, edge conductance

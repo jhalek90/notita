@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace notita {
 
@@ -91,6 +92,11 @@ ElectricSystem::ElectricSystem(World& world, const MaterialRegistry& mats, Threa
             p.splitCurrent = std::max(1e-4f, floatOf(m, "split_current", 0.05f));
         }
     }
+    serialRole_.assign(mats.size(), 0);
+    for (std::size_t m = 0; m < props_.size(); ++m) {
+        const ElectricProps& p = props_[m];
+        serialRole_[m] = p.role == ElectricRole::Lamp || p.role == ElectricRole::LampLit || p.splitA != kEmpty ? 1 : 0;
+    }
     spark_ = mats.idOf("spark");
     if (spark_ != kEmpty && mats[spark_].kind != MaterialKind::Special) {
         errors_.push_back("spark must be a special (flame-kind) material");
@@ -115,6 +121,7 @@ void ElectricSystem::buildGrid() {
     for (Chunk* c : chunks) grid_[static_cast<std::size_t>(c->coord.y - bcy) * cw_ + (c->coord.x - bcx)] = c;
     const std::size_t n = static_cast<std::size_t>(gw_) * gh_;
     if (nodeOf_.size() != n) nodeOf_.assign(n, -1);
+    if (cond_.size() != n) cond_.assign(n, 0);
     if (mark_.size() != n) { mark_.assign(n, 0); markStamp_ = 0; }
 }
 
@@ -125,11 +132,16 @@ Cell* ElectricSystem::gridCell(int gx, int gy) const {
 }
 
 bool ElectricSystem::loaded(int gx, int gy) const {
-    if (const Cell* above = gridCell(gx, gy - 1)) {
+    // the first pixel above the plate (a thick plate's own upper rows don't count)
+    const MaterialId plate = gridCell(gx, gy)->material;
+    int y = gy - 1;
+    const Cell* above = gridCell(gx, y);
+    for (int k = 0; above && above->material == plate && !(above->flags & kFlagBody) && k < 8; ++k) above = gridCell(gx, --y);
+    if (above) {
         const MaterialKind k = mats_[above->material].kind;
-        if (k == MaterialKind::Solid || k == MaterialKind::Powder || k == MaterialKind::Liquid) return true;
+        if (above->material != plate && (k == MaterialKind::Solid || k == MaterialKind::Powder || k == MaterialKind::Liquid)) return true;
     }
-    return player_ && player_->covers(gx + gx0_, gy + gy0_ - 1);
+    return player_ && player_->covers(gx + gx0_, y + gy0_);
 }
 
 bool ElectricSystem::conductsAt(int gx, int gy) const {
@@ -170,6 +182,38 @@ void ElectricSystem::heatCell(int gx, int gy, Cell& c, float energy) {
 // --------------------------------------------------------------------------
 // the step
 
+namespace {
+
+// Node loops run over fixed blocks of nodes; partial sums are added in block
+// order, so the result is the same with or without the pool (and for any
+// thread count).
+constexpr std::size_t kBlock = 4096;
+// Components at least this big are solved one at a time with the blocks in
+// parallel; smaller ones are solved side by side, each on one thread.
+constexpr std::size_t kBigComponent = 3 * kBlock;
+
+struct SumMax {
+    double sum = 0.0, max = 0.0;
+};
+
+template <class F>
+SumMax overBlocks(ThreadPool* pool, std::size_t m, F&& f) {
+    const int nb = static_cast<int>((m + kBlock - 1) / kBlock);
+    if (nb <= 1) return m ? f(std::size_t{0}, m) : SumMax{};
+    std::vector<SumMax> part(static_cast<std::size_t>(nb));
+    auto job = [&](int k) {
+        const std::size_t k0 = static_cast<std::size_t>(k) * kBlock;
+        part[static_cast<std::size_t>(k)] = f(k0, std::min(m, k0 + kBlock));
+    };
+    if (pool) pool->parallelFor(nb, job);
+    else for (int k = 0; k < nb; ++k) job(k);
+    SumMax s;
+    for (const SumMax& p : part) { s.sum += p.sum; s.max = std::max(s.max, p.max); }
+    return s;
+}
+
+} // namespace
+
 void ElectricSystem::step() {
     const auto t0 = std::chrono::steady_clock::now();
     ++tick_;
@@ -185,13 +229,18 @@ void ElectricSystem::step() {
     buildGrid();
     if (gw_ == 0) return;
     flood();
+    const auto tFlood = std::chrono::steady_clock::now();
     const int ncomp = static_cast<int>(compStart_.size()) - 1;
     compIters_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 0);
     compResidual_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 0.0);
     compSettled_.assign(static_cast<std::size_t>(std::max(ncomp, 0)), 1);
-    // components are independent: solve them in parallel (each one is serial inside)
-    if (pool_ && ncomp > 1) pool_->parallelFor(ncomp, [&](int k) { solve(k); });
-    else for (int k = 0; k < ncomp; ++k) solve(k);
+    // small components side by side (each serial), big ones one by one with parallel blocks
+    std::vector<int> small, big;
+    for (int k = 0; k < ncomp; ++k)
+        (static_cast<std::size_t>(compStart_[k + 1] - compStart_[k]) >= kBigComponent ? big : small).push_back(k);
+    if (pool_ && small.size() > 1) pool_->parallelFor(static_cast<int>(small.size()), [&](int s) { solve(small[static_cast<std::size_t>(s)], false); });
+    else for (int k : small) solve(k, false);
+    for (int k : big) solve(k, true);
     for (int k = 0; k < ncomp; ++k) {
         stats_.solved += compIters_[k] > 0 || compResidual_[k] > 0.0 ? 1 : 0;
         stats_.iterations += compIters_[k];
@@ -201,7 +250,12 @@ void ElectricSystem::step() {
     nodeComp_.resize(npx_.size());
     for (int k = 0; k < ncomp; ++k)
         std::fill(nodeComp_.begin() + compStart_[k], nodeComp_.begin() + compStart_[k + 1], k);
+    const auto tSolve = std::chrono::steady_clock::now();
     effects();
+    const auto tEffects = std::chrono::steady_clock::now();
+    stats_.floodMs = std::chrono::duration<double, std::milli>(tFlood - t0).count();
+    stats_.solveMs = std::chrono::duration<double, std::milli>(tSolve - tFlood).count();
+    stats_.effectsMs = std::chrono::duration<double, std::milli>(tEffects - tSolve).count();
     std::vector<Strike> strikes;
     strikes.swap(strikes_);
     for (const Strike& s : strikes) runStrike(s);
@@ -220,11 +274,21 @@ void ElectricSystem::flood() {
         s.clear();
         l.clear();
         const Chunk* c = grid_[static_cast<std::size_t>(k)];
-        if (!c) return;
+        const int ox = (k % cw_) * kChunkSize, oy = (k / cw_) * kChunkSize;
+        if (!c) {
+            for (int y = 0; y < kChunkSize; ++y)
+                std::memset(&cond_[static_cast<std::size_t>(oy + y) * gw_ + ox], 0, kChunkSize);
+            return;
+        }
         for (int i = 0; i < kChunkCells; ++i) {
             const Cell& cell = c->cells[i];
-            const ElectricRole r = props_[cell.material].role;
-            if (r == ElectricRole::None || (cell.flags & kFlagBody)) continue;
+            const ElectricProps& ep = props_[cell.material];
+            const int gx = ox + (i & kChunkMask), gy = oy + (i >> kChunkShift);
+            const bool body = (cell.flags & kFlagBody) != 0;
+            cond_[static_cast<std::size_t>(gy) * gw_ + gx] =
+                !body && ep.conduct > 0.0f && (ep.role != ElectricRole::Plate || loaded(gx, gy)) ? 1 : 0;
+            const ElectricRole r = ep.role;
+            if (r == ElectricRole::None || body) continue;
             if (r == ElectricRole::Source || r == ElectricRole::Drain || r == ElectricRole::Thermo) s.push_back(static_cast<std::uint16_t>(i));
             else if (r == ElectricRole::LampLit) l.push_back(static_cast<std::uint16_t>(i));
         }
@@ -233,27 +297,32 @@ void ElectricSystem::flood() {
     else for (int k = 0; k < nchunks; ++k) scan(k);
 
     // 2. flood-fill components from the seeds, in order
-    npx_.clear(); ng_.clear(); nfixed_.clear(); nv_.clear();
+    npx_.clear();
+    nx_.clear();
+    ny_.clear();
     compStart_.assign(1, 0);
+    auto add = [&](int x, int y) {
+        const std::size_t px = static_cast<std::size_t>(y) * static_cast<std::size_t>(gw_) + static_cast<std::size_t>(x);
+        nodeOf_[px] = static_cast<std::int32_t>(npx_.size());
+        npx_.push_back(static_cast<std::int32_t>(px));
+        nx_.push_back(static_cast<std::int16_t>(x));
+        ny_.push_back(static_cast<std::int16_t>(y));
+    };
     for (int k = 0; k < nchunks; ++k) {
         const int ocx = (k % cw_) * kChunkSize, ocy = (k / cw_) * kChunkSize;
         for (std::uint16_t li : seeds_[static_cast<std::size_t>(k)]) {
             const int sx = ocx + (li & kChunkMask), sy = ocy + (li >> kChunkShift);
-            const std::size_t spx = static_cast<std::size_t>(sy) * gw_ + sx;
-            if (nodeOf_[spx] >= 0) continue;
-            const std::int32_t first = static_cast<std::int32_t>(npx_.size());
-            nodeOf_[spx] = first;
-            npx_.push_back(static_cast<std::int32_t>(spx));
-            for (std::size_t head = static_cast<std::size_t>(first); head < npx_.size(); ++head) {
-                const int px = npx_[head];
-                const int x = px % gw_, y = px / gw_;
+            if (nodeOf_[static_cast<std::size_t>(sy) * gw_ + sx] >= 0) continue;
+            const std::size_t first = npx_.size();
+            add(sx, sy);
+            for (std::size_t head = first; head < npx_.size(); ++head) {
+                const int x = nx_[head], y = ny_[head];
                 for (int d = 0; d < 4; ++d) {
-                    const int nx = x + kDx[d], ny = y + kDy[d];
-                    if (nx < 0 || ny < 0 || nx >= gw_ || ny >= gh_) continue;
-                    const std::size_t npx = static_cast<std::size_t>(ny) * gw_ + nx;
-                    if (nodeOf_[npx] >= 0 || !conductsAt(nx, ny)) continue;
-                    nodeOf_[npx] = static_cast<std::int32_t>(npx_.size());
-                    npx_.push_back(static_cast<std::int32_t>(npx));
+                    const int qx = x + kDx[d], qy = y + kDy[d];
+                    if (qx < 0 || qy < 0 || qx >= gw_ || qy >= gh_) continue;
+                    const std::size_t qpx = static_cast<std::size_t>(qy) * gw_ + qx;
+                    if (!cond_[qpx] || nodeOf_[qpx] >= 0) continue;
+                    add(qx, qy);
                 }
             }
             compStart_.push_back(static_cast<std::int32_t>(npx_.size()));
@@ -263,49 +332,76 @@ void ElectricSystem::flood() {
     stats_.nodes = static_cast<int>(n);
     stats_.components = static_cast<int>(compStart_.size()) - 1;
 
-    // 3. node data: conductance, fixed potentials, warm start, edges
+    // 3. node data: conductance, fixed potentials, warm start (pure per node: parallel blocks)
     ng_.resize(n); nfixed_.resize(n); nv_.resize(n);
     nr_.resize(n); nz_.resize(n); np_.resize(n); nq_.resize(n); nd_.resize(n);
-    nnb_.assign(n * 4, -1);
-    nge_.assign(n * 4, 0.0f);
+    nnb_.resize(n * 4);
+    nge_.resize(n * 4);
+    nfresh_.assign(n, 0);
+    nmat_.resize(n);
     const int bcx = gx0_ >> kChunkShift, bcy = gy0_ >> kChunkShift;
-    const Field* lastField = nullptr;
-    std::uint64_t lastKey = ~0ull;
-    for (std::size_t i = 0; i < n; ++i) {
-        const int px = npx_[i], x = px % gw_, y = px / gw_;
-        const Cell& c = *gridCell(x, y);
-        const ElectricProps& p = props_[c.material];
-        ng_[i] = p.conduct;
-        nfixed_[i] = p.fixed() ? 1 : 0;
-        if (p.role == ElectricRole::Source) nv_[i] = p.voltage;
-        else if (p.role == ElectricRole::Drain) nv_[i] = 0.0;
-        else if (p.role == ElectricRole::Thermo)
-            nv_[i] = std::clamp(p.voltage * (c.temperature - kAmbientTemp), -params_.thermoMax, params_.thermoMax);
-        else {
-            const std::uint64_t key = chunkKey(bcx + (x >> kChunkShift), bcy + (y >> kChunkShift));
-            if (key != lastKey) {
-                auto it = fields_.find(key);
-                lastField = it == fields_.end() ? nullptr : &it->second;
-                lastKey = key;
+    overBlocks(pool_, n, [&](std::size_t i0, std::size_t i1) {
+        const Field* lastField = nullptr;
+        std::uint64_t lastKey = ~0ull;
+        for (std::size_t i = i0; i < i1; ++i) {
+            const int x = nx_[i], y = ny_[i];
+            const Cell& c = *gridCell(x, y);
+            const ElectricProps& p = props_[c.material];
+            nmat_[i] = c.material;
+            ng_[i] = p.conduct;
+            nfixed_[i] = p.fixed() ? 1 : 0;
+            if (p.role == ElectricRole::Source) nv_[i] = p.voltage;
+            else if (p.role == ElectricRole::Drain) nv_[i] = 0.0;
+            else if (p.role == ElectricRole::Thermo)
+                nv_[i] = std::clamp(p.voltage * (c.temperature - kAmbientTemp), -params_.thermoMax, params_.thermoMax);
+            else {
+                const std::uint64_t key = chunkKey(bcx + (x >> kChunkShift), bcy + (y >> kChunkShift));
+                if (key != lastKey) {
+                    auto it = fields_.find(key);
+                    lastField = it == fields_.end() ? nullptr : &it->second;
+                    lastKey = key;
+                }
+                const float v = lastField ? lastField->v[static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask))]
+                                          : std::numeric_limits<float>::quiet_NaN();
+                if (std::isnan(v)) { nv_[i] = 0.0; nfresh_[i] = 1; }
+                else nv_[i] = v;
             }
-            nv_[i] = lastField ? lastField->v[static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask))] : 0.0;
         }
-    }
+        return SumMax{};
+    });
+    // 4. edges (needs every node's conductance)
+    overBlocks(pool_, n, [&](std::size_t i0, std::size_t i1) {
+        for (std::size_t i = i0; i < i1; ++i) {
+            const int x = nx_[i], y = ny_[i];
+            for (int d = 0; d < 4; ++d) {
+                const int qx = x + kDx[d], qy = y + kDy[d];
+                std::int32_t j = -1;
+                if (qx >= 0 && qy >= 0 && qx < gw_ && qy < gh_) j = nodeOf_[static_cast<std::size_t>(qy) * gw_ + qx];
+                nnb_[i * 4 + d] = j;
+                if (j < 0) { nge_[i * 4 + d] = 0.0f; continue; }
+                const float a = ng_[i], b = ng_[static_cast<std::size_t>(j)];
+                nge_[i * 4 + d] = 2.0f * a * b / (a + b);
+            }
+        }
+        return SumMax{};
+    });
+    // 5. a pixel that just joined (a wire extended, a bubble's hole refilled) starts at its
+    //    neighbours' potential, so a small change doesn't look like a big error to the solver
     for (std::size_t i = 0; i < n; ++i) {
-        const int px = npx_[i], x = px % gw_, y = px / gw_;
+        if (!nfresh_[i]) continue;
+        double s = 0.0;
+        int c = 0;
         for (int d = 0; d < 4; ++d) {
-            const int nx = x + kDx[d], ny = y + kDy[d];
-            if (nx < 0 || ny < 0 || nx >= gw_ || ny >= gh_) continue;
-            const std::int32_t j = nodeOf_[static_cast<std::size_t>(ny) * gw_ + nx];
-            if (j < 0) continue;
-            nnb_[i * 4 + d] = j;
-            const float a = ng_[i], b = ng_[static_cast<std::size_t>(j)];
-            nge_[i * 4 + d] = 2.0f * a * b / (a + b);
+            const std::int32_t j = nnb_[i * 4 + d];
+            if (j >= 0 && nfresh_[static_cast<std::size_t>(j)] != 1) { s += nv_[static_cast<std::size_t>(j)]; ++c; }
         }
+        if (c > 0) nv_[i] = s / c;
+        nfresh_[i] = 2; // filled (its value may seed the next fresh neighbour)
     }
 }
 
-void ElectricSystem::solve(int comp) {
+void ElectricSystem::solve(int comp, bool parallel) {
+    ThreadPool* pool = parallel ? pool_ : nullptr;
     const std::size_t b = static_cast<std::size_t>(compStart_[comp]), e = static_cast<std::size_t>(compStart_[comp + 1]);
     double vmin = 1e300, vmax = -1e300;
     for (std::size_t i = b; i < e; ++i)
@@ -316,141 +412,218 @@ void ElectricSystem::solve(int comp) {
         return;
     }
     const double tol = params_.tolerance * (vmax - vmin);
-    // r = -A x on the free nodes (Kirchhoff: the net current out of every free node is 0)
+    const double settledTol = params_.settled * (vmax - vmin);
+    // Kirchhoff on the free nodes: the net current out of each is 0. Jacobi-preconditioned CG,
+    // r = -A v, on node indices b..e (the scratch vectors are shared; components use disjoint ranges)
     double* v = nv_.data();
-    auto resid = [&](std::size_t i) {
-        double r = 0.0;
-        for (int d = 0; d < 4; ++d) {
-            const std::int32_t j = nnb_[i * 4 + d];
-            if (j >= 0) r += nge_[i * 4 + d] * (v[j] - v[i]);
-        }
-        return r;
-    };
     const std::size_t m = e - b;
-    // the scratch vectors are shared, but components use disjoint ranges of them
     double* r = nr_.data() + b; double* z = nz_.data() + b; double* p = np_.data() + b;
     double* q = nq_.data() + b; double* dg = nd_.data() + b;
-    double rz = 0.0, worst = 0.0;
-    for (std::size_t k = 0; k < m; ++k) {
-        const std::size_t i = b + k;
-        double d = 0.0;
-        for (int s = 0; s < 4; ++s) d += nge_[i * 4 + s];
-        dg[k] = d > 0.0 ? d : 1.0;
-        r[k] = nfixed_[i] ? 0.0 : resid(i);
-        z[k] = r[k] / dg[k];
-        p[k] = z[k];
-        rz += r[k] * z[k];
-        worst = std::max(worst, std::abs(z[k]));
-    }
-    int it = 0;
-    for (; it < params_.maxIterations && worst > tol; ++it) {
-        double pq = 0.0;
-        for (std::size_t k = 0; k < m; ++k) {
+    SumMax s0 = overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
+        SumMax s;
+        for (std::size_t k = k0; k < k1; ++k) {
             const std::size_t i = b + k;
-            if (nfixed_[i]) { q[k] = 0.0; continue; }
-            double s = dg[k] * p[k];
-            for (int d = 0; d < 4; ++d) {
-                const std::int32_t j = nnb_[i * 4 + d];
-                if (j >= 0) s -= nge_[i * 4 + d] * p[static_cast<std::size_t>(j) - b];
+            double d = 0.0, res = 0.0;
+            for (int t = 0; t < 4; ++t) {
+                const std::int32_t j = nnb_[i * 4 + t];
+                if (j < 0) continue;
+                d += nge_[i * 4 + t];
+                res += nge_[i * 4 + t] * (v[j] - v[i]);
             }
-            q[k] = s;
-            pq += p[k] * s;
+            dg[k] = d > 0.0 ? d : 1.0;
+            r[k] = nfixed_[i] ? 0.0 : res;
+            z[k] = r[k] / dg[k];
+            p[k] = z[k];
+            s.sum += r[k] * z[k];
+            s.max = std::max(s.max, std::abs(z[k]));
         }
+        return s;
+    });
+    double rz = s0.sum, worst = s0.max;
+    int it = 0;
+    // already close enough (warm start, nothing much changed): keep it, don't polish
+    for (; it < params_.maxIterations && worst > tol && !(it == 0 && worst <= settledTol); ++it) {
+        const double pq = overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
+            SumMax s;
+            for (std::size_t k = k0; k < k1; ++k) {
+                const std::size_t i = b + k;
+                if (nfixed_[i]) { q[k] = 0.0; continue; }
+                double a = dg[k] * p[k];
+                for (int t = 0; t < 4; ++t) {
+                    const std::int32_t j = nnb_[i * 4 + t];
+                    if (j >= 0) a -= nge_[i * 4 + t] * p[static_cast<std::size_t>(j) - b];
+                }
+                q[k] = a;
+                s.sum += p[k] * a;
+            }
+            return s;
+        }).sum;
         if (pq <= 0.0) break;
         const double alpha = rz / pq;
-        double rzNew = 0.0;
-        worst = 0.0;
-        for (std::size_t k = 0; k < m; ++k) {
-            v[b + k] += alpha * p[k];
-            r[k] -= alpha * q[k];
-            z[k] = r[k] / dg[k];
-            rzNew += r[k] * z[k];
-            worst = std::max(worst, std::abs(z[k]));
-        }
-        const double beta = rzNew / rz;
-        rz = rzNew;
-        for (std::size_t k = 0; k < m; ++k) p[k] = z[k] + beta * p[k];
+        const SumMax s1 = overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
+            SumMax s;
+            for (std::size_t k = k0; k < k1; ++k) {
+                v[b + k] += alpha * p[k];
+                r[k] -= alpha * q[k];
+                z[k] = r[k] / dg[k];
+                s.sum += r[k] * z[k];
+                s.max = std::max(s.max, std::abs(z[k]));
+            }
+            return s;
+        });
+        const double beta = s1.sum / rz;
+        rz = s1.sum;
+        worst = s1.max;
+        overBlocks(pool, m, [&](std::size_t k0, std::size_t k1) {
+            for (std::size_t k = k0; k < k1; ++k) p[k] = z[k] + beta * p[k];
+            return SumMax{};
+        });
     }
     compIters_[static_cast<std::size_t>(comp)] = it;
     compResidual_[static_cast<std::size_t>(comp)] = worst;
-    compSettled_[static_cast<std::size_t>(comp)] = worst <= params_.settled * (vmax - vmin) ? 1 : 0;
+    compSettled_[static_cast<std::size_t>(comp)] = worst <= settledTol ? 1 : 0;
 }
 
 void ElectricSystem::effects() {
     const std::size_t n = npx_.size();
-    npow_.assign(n, 0.0f);
-    ncur_.assign(n, 0.0f);
-    maxV_ = 0.0f;
-    for (std::size_t i = 0; i < n; ++i) {
-        double pw = 0.0, cur = 0.0;
-        for (int d = 0; d < 4; ++d) {
-            const std::int32_t j = nnb_[i * 4 + d];
-            if (j < 0) continue;
-            const double dv = nv_[i] - nv_[static_cast<std::size_t>(j)];
-            const double f = nge_[i * 4 + d] * dv;
-            pw += 0.5 * f * dv;
-            cur += 0.5 * std::abs(f);
-        }
-        npow_[i] = static_cast<float>(pw);
-        ncur_[i] = static_cast<float>(cur);
-        maxV_ = std::max(maxV_, static_cast<float>(std::abs(nv_[i])));
-        stats_.power += pw;
-    }
+    const int nchunks = cw_ * ch_;
+    const int bcx = gx0_ >> kChunkShift, bcy = gy0_ >> kChunkShift;
+    auto chunkIndex = [&](std::size_t i) { return (ny_[i] >> kChunkShift) * cw_ + (nx_[i] >> kChunkShift); };
 
-    // fields: the chunks with nodes keep their potentials, the rest are dropped
+    // fields: the chunks with nodes keep (fresh) potentials, the others are dropped
+    chunkHas_.assign(static_cast<std::size_t>(nchunks), 0);
+    for (std::size_t i = 0; i < n; ++i) chunkHas_[static_cast<std::size_t>(chunkIndex(i))] = 1;
+    fieldGrid_.assign(static_cast<std::size_t>(nchunks), nullptr);
     {
-        std::map<std::uint64_t, Field> next;
-        const int bcx = gx0_ >> kChunkShift, bcy = gy0_ >> kChunkShift;
-        std::uint64_t lastKey = ~0ull;
-        Field* f = nullptr;
-        for (std::size_t i = 0; i < n; ++i) {
-            const int px = npx_[i], x = px % gw_, y = px / gw_;
-            const std::uint64_t key = chunkKey(bcx + (x >> kChunkShift), bcy + (y >> kChunkShift));
-            if (key != lastKey) {
-                auto it = next.find(key);
-                if (it == next.end()) {
-                    auto old = fields_.find(key);
-                    if (old != fields_.end()) {
-                        it = next.emplace(key, std::move(old->second)).first;
-                        std::fill(it->second.v.begin(), it->second.v.end(), 0.0f);
-                        std::fill(it->second.i.begin(), it->second.i.end(), 0.0f);
-                    } else {
-                        it = next.emplace(key, Field{}).first;
-                    }
-                }
-                f = &it->second;
-                lastKey = key;
-            }
-            const std::size_t l = static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask));
-            f->v[l] = static_cast<float>(nv_[i]);
-            f->i[l] = compSettled_[static_cast<std::size_t>(nodeComp_[i])] ? ncur_[i] : 0.0f;
+        std::vector<std::uint64_t> keep;
+        std::vector<Field*> fill;
+        for (int k = 0; k < nchunks; ++k) {
+            if (!chunkHas_[static_cast<std::size_t>(k)]) continue;
+            const std::uint64_t key = chunkKey(bcx + k % cw_, bcy + k / cw_);
+            keep.push_back(key);
+            Field& f = fields_[key];
+            fill.push_back(&f);
+            fieldGrid_[static_cast<std::size_t>(k)] = &f;
         }
-        fields_.swap(next);
+        auto clearField = [&](int k) {
+            Field& f = *fill[static_cast<std::size_t>(k)];
+            std::fill(f.v.begin(), f.v.end(), std::numeric_limits<float>::quiet_NaN());
+            std::fill(f.i.begin(), f.i.end(), 0.0f);
+        };
+        if (pool_ && fill.size() > 1) pool_->parallelFor(static_cast<int>(fill.size()), clearField);
+        else for (std::size_t k = 0; k < fill.size(); ++k) clearField(static_cast<int>(k));
+        std::sort(keep.begin(), keep.end());
+        for (auto it = fields_.begin(); it != fields_.end();)
+            it = std::binary_search(keep.begin(), keep.end(), it->first) ? std::next(it) : fields_.erase(it);
     }
 
+    // power and current per node, the fields, and resistive heating: pure per node (parallel blocks)
+    npow_.resize(n);
+    ncur_.resize(n);
+    std::vector<double> heatPart((n + kBlock - 1) / kBlock, 0.0);
+    const SumMax totals = overBlocks(pool_, n, [&](std::size_t i0, std::size_t i1) {
+        SumMax s;
+        double heat = 0.0;
+        for (std::size_t i = i0; i < i1; ++i) {
+            double pw = 0.0, cur = 0.0;
+            for (int d = 0; d < 4; ++d) {
+                const std::int32_t j = nnb_[i * 4 + d];
+                if (j < 0) continue;
+                const double dv = nv_[i] - nv_[static_cast<std::size_t>(j)];
+                const double f = nge_[i * 4 + d] * dv;
+                pw += 0.5 * f * dv;
+                cur += 0.5 * std::abs(f);
+            }
+            const bool settled = compSettled_[static_cast<std::size_t>(nodeComp_[i])] != 0;
+            npow_[i] = static_cast<float>(pw);
+            ncur_[i] = static_cast<float>(cur);
+            s.sum += pw;
+            s.max = std::max(s.max, std::abs(nv_[i]));
+            const int x = nx_[i], y = ny_[i];
+            Field& f = *fieldGrid_[static_cast<std::size_t>(chunkIndex(i))];
+            const std::size_t l = static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask));
+            f.v[l] = static_cast<float>(nv_[i]);
+            f.i[l] = settled ? ncur_[i] : 0.0f;
+            // resistive heating (the terminals themselves stay cool; a half-solved field waits)
+            if (!settled || nfixed_[i] || pw <= 0.0) continue;
+            Cell& c = *gridCell(x, y);
+            const Material& m = mats_[c.material];
+            const float dT = std::min(params_.heatGain * props_[c.material].heatShare * static_cast<float>(pw) / m.heatCapacity, params_.maxHeat);
+            if (dT <= 1e-5f) continue;
+            const float before = c.temperature;
+            c.temperature = std::clamp(c.temperature + dT, kMinTemp, kMaxTemp);
+            heat += static_cast<double>(c.temperature - before) * m.heatCapacity;
+        }
+        heatPart[i0 / kBlock] = heat;
+        return s;
+    });
+    stats_.power = totals.sum;
+    maxV_ = static_cast<float>(totals.max);
+    for (double h : heatPart) stats_.heat += h;
+    // heat wakes: every chunk with live pixels, and its left and upper neighbours (they own the pairs across the seam)
+    for (int k = 0; k < nchunks; ++k) {
+        if (!chunkHas_[static_cast<std::size_t>(k)]) continue;
+        const int kx = k % cw_, ky = k / cw_;
+        for (int dy = -1; dy <= 0; ++dy)
+            for (int dx = -1; dx <= 0; ++dx) {
+                if (kx + dx < 0 || ky + dy < 0) continue;
+                if (Chunk* c = grid_[static_cast<std::size_t>(ky + dy) * cw_ + (kx + dx)]) c->heatNext.store(true, std::memory_order_relaxed);
+            }
+    }
+
+    // lamps, sparks and electrolysis: serial, in node order, one RNG stream
     Rng rng(Rng::hash(seed_ ^ 0xE1EC7u, tick_));
+    const std::uint32_t lampStamp = ++markStamp_;
+    std::vector<std::size_t> clump;
+    auto isLamp = [&](MaterialId m) {
+        const ElectricRole r = props_[m].role;
+        return (r == ElectricRole::Lamp || r == ElectricRole::LampLit) && props_[m].toggle != kEmpty;
+    };
     for (std::size_t i = 0; i < n; ++i) {
-        const int px = npx_[i], x = px % gw_, y = px / gw_;
+        if (!serialRole_[nmat_[i]] && npow_[i] < params_.sparkPower) continue; // nothing to do for most wire
+        if (!compSettled_[static_cast<std::size_t>(nodeComp_[i])]) {
+            const Cell& c = *gridCell(nx_[i], ny_[i]);
+            if (props_[c.material].role == ElectricRole::LampLit) ++stats_.lit; // stays as it is until the solve settles
+            continue;
+        }
+        const int x = nx_[i], y = ny_[i];
         Cell& c = *gridCell(x, y);
         const ElectricProps& p = props_[c.material];
         const float pw = npow_[i];
-        if (!compSettled_[static_cast<std::size_t>(nodeComp_[i])]) {
-            if (p.role == ElectricRole::LampLit) ++stats_.lit; // stays as it is until the solve settles
-            continue;
+        // a lamp lights as a whole: the mean power over its connected lamp pixels decides
+        if (isLamp(c.material) && mark_[static_cast<std::size_t>(npx_[i])] != lampStamp) {
+            clump.assign(1, i);
+            mark_[static_cast<std::size_t>(npx_[i])] = lampStamp;
+            double sum = 0.0;
+            int litNow = 0;
+            for (std::size_t h = 0; h < clump.size(); ++h) {
+                const std::size_t a = clump[h];
+                sum += npow_[a];
+                litNow += props_[gridCell(nx_[a], ny_[a])->material].role == ElectricRole::LampLit ? 1 : 0;
+                for (int d = 0; d < 4; ++d) {
+                    const std::int32_t j = nnb_[a * 4 + d];
+                    if (j < 0) continue;
+                    const std::size_t pj = static_cast<std::size_t>(npx_[static_cast<std::size_t>(j)]);
+                    if (mark_[pj] == lampStamp || !isLamp(gridCell(nx_[static_cast<std::size_t>(j)], ny_[static_cast<std::size_t>(j)])->material)) continue;
+                    mark_[pj] = lampStamp;
+                    clump.push_back(static_cast<std::size_t>(j));
+                }
+            }
+            const double mean = sum / static_cast<double>(clump.size());
+            const bool wasLit = 2 * litNow >= static_cast<int>(clump.size());
+            const bool lit = mean >= (wasLit ? 0.5 : 1.0) * params_.lampPower;
+            for (std::size_t a : clump) {
+                const int ax = nx_[a], ay = ny_[a];
+                Cell& lc = *gridCell(ax, ay);
+                const bool isLit = props_[lc.material].role == ElectricRole::LampLit;
+                if (isLit != lit) {
+                    lc.material = props_[lc.material].toggle;
+                    wakeAt(ax, ay, true);
+                    ++stats_.toggled;
+                }
+                if (lit) ++stats_.lit;
+            }
         }
-        // resistive heating (the terminals themselves stay cool)
-        if (!nfixed_[i] && pw > 0.0f) heatCell(x, y, c, params_.heatGain * p.heatShare * pw);
-        // lamps
-        if (p.role == ElectricRole::Lamp && pw >= params_.lampPower && p.toggle != kEmpty) {
-            c.material = p.toggle;
-            wakeAt(x, y, true);
-            ++stats_.toggled;
-        } else if (p.role == ElectricRole::LampLit && pw < 0.5f * params_.lampPower && p.toggle != kEmpty) {
-            c.material = p.toggle;
-            wakeAt(x, y, true);
-            ++stats_.toggled;
-        }
-        if (props_[c.material].role == ElectricRole::LampLit) ++stats_.lit;
         // sparks into the air next to a pixel carrying a lot of power
         if (spark_ != kEmpty && pw >= params_.sparkPower) {
             const float chance = params_.sparkChance * std::min(pw / params_.sparkPower, 5.0f);
@@ -475,16 +648,7 @@ void ElectricSystem::effects() {
                     const int d = (d0 + k) & 3;
                     Cell* t = gridCell(x + kDx[d], y + kDy[d]);
                     if (!t || t->material != c.material || (t->flags & kFlagBody)) continue;
-                    const MaterialId a = p.splitA, bb = p.splitB;
-                    auto become = [&](Cell& cell, MaterialId into) {
-                        cell.material = into;
-                        cell.flags = 0;
-                        cell.life = 0;
-                        cell.aux = 0;
-                        cell.vx = cell.vy = 0;
-                    };
-                    become(c, a);
-                    become(*t, bb);
+                    split(c, *t, p);
                     wakeAt(x, y, true);
                     wakeAt(x + kDx[d], y + kDy[d], true);
                     ++stats_.splits;
@@ -495,15 +659,13 @@ void ElectricSystem::effects() {
         }
     }
     // lit lamps that aren't powered any more (not part of any component) go out
-    const int nchunks = cw_ * ch_;
     for (int k = 0; k < nchunks; ++k) {
         Chunk* ck = grid_[static_cast<std::size_t>(k)];
         if (!ck) continue;
         const int ocx = (k % cw_) * kChunkSize, ocy = (k / cw_) * kChunkSize;
         for (std::uint16_t li : lit_[static_cast<std::size_t>(k)]) {
             const int x = ocx + (li & kChunkMask), y = ocy + (li >> kChunkShift);
-            const std::size_t px = static_cast<std::size_t>(y) * gw_ + x;
-            if (nodeOf_[px] >= 0) continue; // handled above
+            if (nodeOf_[static_cast<std::size_t>(y) * gw_ + x] >= 0) continue; // handled above
             Cell& c = ck->cells[li];
             const ElectricProps& p = props_[c.material];
             if (p.role != ElectricRole::LampLit || p.toggle == kEmpty) continue;
@@ -512,6 +674,18 @@ void ElectricSystem::effects() {
             ++stats_.toggled;
         }
     }
+}
+
+void ElectricSystem::split(Cell& a, Cell& b, const ElectricProps& p) {
+    auto become = [](Cell& cell, MaterialId into) {
+        cell.material = into;
+        cell.flags = 0;
+        cell.life = 0;
+        cell.aux = 0;
+        cell.vx = cell.vy = 0;
+    };
+    become(a, p.splitA);
+    become(b, p.splitB);
 }
 
 void ElectricSystem::runStrike(const Strike& s) {
@@ -633,7 +807,8 @@ int ElectricSystem::toggleSwitch(int x, int y, int radius) {
 float ElectricSystem::potentialAt(int x, int y) const {
     auto it = fields_.find(chunkKey(x >> kChunkShift, y >> kChunkShift));
     if (it == fields_.end()) return 0.0f;
-    return it->second.v[static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask))];
+    const float v = it->second.v[static_cast<std::size_t>(((y & kChunkMask) << kChunkShift) | (x & kChunkMask))];
+    return std::isnan(v) ? 0.0f : v;
 }
 
 const float* ElectricSystem::potentials(int cx, int cy) const {
@@ -661,11 +836,11 @@ bool ElectricSystem::exportChunk(int cx, int cy, std::vector<std::uint8_t>& out,
     if (it == fields_.end()) return false;
     ByteWriter w;
     std::uint32_t count = 0;
-    for (float v : it->second.v) count += v != 0.0f;
+    for (float v : it->second.v) count += std::isnan(v) ? 0u : 1u;
     w.u32(count);
     for (int l = 0; l < kChunkCells; ++l) {
         const float v = it->second.v[static_cast<std::size_t>(l)];
-        if (v == 0.0f) continue;
+        if (std::isnan(v)) continue;
         w.u16(static_cast<std::uint16_t>(l));
         w.f32(v);
     }

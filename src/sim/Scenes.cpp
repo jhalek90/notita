@@ -241,9 +241,9 @@ void circuits(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     rect("volt_cell", 300, 56, 307, 75);
     rect("copper", 308, 64, 340, 66);
     rect("switch_open", 341, 61, 346, 69);
-    rect("copper", 347, 64, 380, 66);
-    rect("heater_coil", 381, 64, 392, 66);
-    rect("copper", 393, 64, 430, 66);
+    rect("copper", 347, 64, 383, 66);
+    rect("heater_coil", 384, 64, 389, 66);
+    rect("copper", 390, 64, 430, 66);
     rect("ground_rod", 431, 56, 438, 75);
     rect("glass", 376, 61, 397, 63);  // pot floor, right on the coil
     rect("glass", 376, 36, 378, 60);
