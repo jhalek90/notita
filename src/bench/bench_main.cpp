@@ -16,6 +16,8 @@
 //   thermal+p4: thermal+gas with splash particles and rigid bodies on (the
 //            frost/timber/iron clumps in the mix become bodies)
 //   flip+p4: flip (heat off) with splash particles on: every liquid landing hard splashes
+//   play:    the phase 5 playground with everything on and a scripted player
+//            walking, digging, jetting and setting off charges
 // Gas rows run the grid on the CPU reference solver (the GPU solver needs
 // SDL and a device; notita --gas-selftest times it). "grid ms" is the gas
 // grid step (coupling + solve) and is included in the mean.
@@ -25,6 +27,7 @@
 #include "script/ReactionScript.h"
 #include "sim/Bodies.h"
 #include "sim/Particles.h"
+#include "sim/Player.h"
 #include "sim/GasGrid.h"
 #include "sim/Material.h"
 #include "sim/Reactions.h"
@@ -47,9 +50,10 @@ struct Result {
     double activeChunks = 0, heatChunks = 0, cells = 0, events = 0;
     double gridMs = 0, solveMs = 0, obstaclesMs = 0, pushMs = 0;
     double particleMs = 0, bodyMs = 0, particles = 0, bodies = 0, bodyPixels = 0;
+    double playerMs = 0;
 };
 
-enum class Scene { Churn, Flip, Thermal, Conduct, GasLab, Quarry };
+enum class Scene { Churn, Flip, Thermal, Conduct, GasLab, Quarry, Play };
 
 Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Scene scene, bool heat, bool gas,
                 bool phase4, int threads, int ticks) {
@@ -59,6 +63,9 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     GasGrid grid(world, mats, &pool, 2026);
     ParticleSystem particles(world, mats, &pool, 2026);
     BodySystem bodies(world, mats, &particles, 2026);
+    Player player(world, mats, 2026);
+    if (gas) player.setGas(&grid);
+    if (phase4) player.setBodies(&bodies);
     if (gas) {
         sim.setGasExchange(&grid);
         sim.params().ambientRate = 0.0f;
@@ -76,6 +83,14 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     if (scene == Scene::Thermal) scenes::thermalChurn(world, mats, 77);
     else if (scene == Scene::GasLab) scenes::gasLab(world, mats, 77);
     else if (scene == Scene::Quarry) scenes::quarry(world, mats, 77);
+    else if (scene == Scene::Play) {
+        float sx = 0, sy = 0;
+        scenes::playground(world, mats, 77, &sx, &sy);
+        player.spawn(sx, sy);
+        player.inventory().capacity = 1000000;
+        player.inventory().add(mats.idOf("water"), 100000);
+        player.inventory().charges = 1000000;
+    }
     else if (scene == Scene::Conduct) {
         // solid slate at random temperatures: nothing moves, only heat flows
         Rng rng(77);
@@ -89,16 +104,38 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     const bool flip = scene == Scene::Flip || scene == Scene::Thermal;
     std::vector<double> ms;
     Result r;
+    int tick = 0;
+    double playerMs = 0;
     auto step = [&] {
         sim.tick();
         if (phase4) {
             bodies.step();
             particles.step();
         }
-        if (!gas) return 0.0;
-        const auto t0 = std::chrono::steady_clock::now();
-        grid.step();
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        double g = 0.0;
+        if (gas) {
+            const auto t0 = std::chrono::steady_clock::now();
+            grid.step();
+            g = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        playerMs = 0.0;
+        if (scene == Scene::Play) {
+            // walk back and forth; dig ahead, jet up, set off a charge at the feet, in turn
+            const int t = tick++;
+            PlayerInput in;
+            in.move = (t / 240) % 2 ? -1.0f : 1.0f;
+            in.material = mats.idOf("water");
+            const int phase = t % 120;
+            in.tool = phase < 40 ? Tool::Dig : phase < 80 ? Tool::Jet : Tool::Blast;
+            in.use = phase < 80;
+            in.usePressed = phase == 80;
+            in.aimX = player.x() + in.move * 20.0f;
+            in.aimY = in.tool == Tool::Jet ? player.y() + 40.0f : in.tool == Tool::Blast ? player.y() + 2.0f : player.centreY() + 8.0f;
+            const auto t1 = std::chrono::steady_clock::now();
+            player.step(in);
+            playerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        }
+        return g;
     };
     if (flip) for (int i = 0; i < 300; ++i) step(); // let the first fill settle a bit
     for (int i = 0; i < ticks; ++i) {
@@ -106,7 +143,8 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
         const double g = step();
         const SimStats& st = sim.stats();
         const double p4 = phase4 ? particles.stats().stepMs + bodies.stats().stepMs : 0.0;
-        ms.push_back(st.tickMs + g + p4);
+        ms.push_back(st.tickMs + g + p4 + playerMs);
+        r.playerMs += playerMs;
         r.gridMs += g;
         r.particleMs += phase4 ? particles.stats().stepMs : 0.0;
         r.bodyMs += phase4 ? bodies.stats().stepMs : 0.0;
@@ -141,6 +179,7 @@ Result runScene(const MaterialRegistry& mats, const ReactionTable& reactions, Sc
     r.particles /= n;
     r.bodies /= n;
     r.bodyPixels /= n;
+    r.playerMs /= n;
     return r;
 }
 
@@ -170,13 +209,15 @@ int main(int argc, char** argv) {
         {"thermal", Scene::Thermal, true, false, false}, {"conduct", Scene::Conduct, true, false, false},
         {"thermal+gas", Scene::Thermal, true, true, false}, {"gaslab", Scene::GasLab, true, true, false},
         {"quarry", Scene::Quarry, true, true, true},       {"thermal+p4", Scene::Thermal, true, true, true},
-        {"flip+p4", Scene::Flip, false, false, true},
+        {"flip+p4", Scene::Flip, false, false, true},     {"play", Scene::Play, true, true, true},
     };
     const bool gasOnly = std::getenv("NOTITA_BENCH_GAS_ONLY") != nullptr;
     const bool p4Only = std::getenv("NOTITA_BENCH_P4_ONLY") != nullptr;
+    const bool playOnly = std::getenv("NOTITA_BENCH_PLAY_ONLY") != nullptr;
     for (const Row& row : rows) {
         if (gasOnly && !row.gas) continue;
         if (p4Only && !row.phase4) continue;
+        if (playOnly && row.scene != Scene::Play) continue;
         for (int t : threadCounts) {
             const Result r = runScene(mats, reactions, row.scene, row.heat, row.gas, row.phase4, t, ticks);
             std::printf("%-11s %4s %4s %7d %8.3f %8.3f %8.3f %8.3f %7.1f %7.1f %10.0f %8.0f %8.3f %8.3f\n", row.name,
@@ -188,6 +229,7 @@ int main(int argc, char** argv) {
             if (row.phase4)
                 std::printf("%-11s   particles %.3f ms (%.0f alive), bodies %.3f ms (%.1f bodies, %.0f px)\n", "",
                             r.particleMs, r.particles, r.bodyMs, r.bodies, r.bodyPixels);
+            if (row.scene == Scene::Play) std::printf("%-11s   player %.3f ms\n", "", r.playerMs);
         }
     }
     std::printf("\nmotion / heat = average chunks running the motion / heat pass (of 60); events = state changes,\n"

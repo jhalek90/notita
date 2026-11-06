@@ -684,12 +684,33 @@ void BodySystem::applyLiquid(RigidBody& b) {
     const int line = nrho > 0 ? static_cast<int>(lineSum / nrho) : INT_MAX;
     if (nrho == 0) return;
     rho /= nrho;
+    // a column only displaces liquid when liquid is right under it: the automaton's liquid
+    // doesn't rise into an air pocket under a body, so a pocket gives no lift and the body
+    // settles into it instead of hovering on it
+    std::vector<int> bottom(static_cast<std::size_t>(x1 - x0 + 1), INT_MIN);
+    for (std::size_t k = 0; k < b.pixels.size(); ++k) {
+        int x, y;
+        cellOf(k, x, y);
+        int& bt = bottom[static_cast<std::size_t>(x - x0)];
+        bt = std::max(bt, y);
+    }
+    std::vector<std::uint8_t> wet(bottom.size(), 0);
+    for (std::size_t c = 0; c < bottom.size(); ++c) {
+        const int x = x0 + static_cast<int>(c), bt = bottom[c];
+        if (bt == INT_MIN) continue;
+        for (int d = 1; d <= 2 && !wet[c]; ++d) {
+            const Cell* under = world_.cell(x, bt + d);
+            if (!under) break;
+            if (liquidAt(x, bt + d)) wet[c] = 1;
+            else if (under->material != kEmpty) break; // resting on something: no pocket here
+        }
+    }
     float cx = 0, cy = 0;
     int n = 0;
     for (std::size_t k = 0; k < b.pixels.size(); ++k) {
         int x, y;
         cellOf(k, x, y);
-        if (y < line) continue;
+        if (y < line || !wet[static_cast<std::size_t>(x - x0)]) continue;
         cx += static_cast<float>(x) + 0.5f;
         cy += static_cast<float>(y) + 0.5f;
         ++n;

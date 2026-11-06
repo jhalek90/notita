@@ -77,15 +77,16 @@ struct PlayerParams {
     float maxSpeed = 12.0f;       // px/tick, any direction
     float swimAccel = 0.30f;      // px/tick^2 up (jump) or down (down) in liquid
     float liquidDrag = 0.05f;     // fraction of velocity lost per tick when fully submerged
-    float gasDrag = 0.03f;        // per tick, pull towards the gas grid's wind (still air: falls top out near g / gasDrag)
+    float gasDrag = 0.015f;       // per tick, pull towards the gas grid's wind (still air: falls top out near g / gasDrag = 12.5)
     float gasPush = 0.8f;         // px/tick^2 per unit of pressure gradient per px
+    float glideDrag = 0.2f;       // vertical wind pull while gliding (jump held while falling): ~1 px/tick sink
     // health
     float maxHealth = 100.0f;
     float hurtTemp = 70.0f;       // C: hotter cells around the player hurt
     float coldTemp = -30.0f;      // C: colder cells hurt
     float heatDamage = 0.004f;    // hp per tick per degree past hurtTemp (or below coldTemp)
     float flameDamage = 0.5f;     // hp per tick while touching flames or burning pixels
-    float landSpeed = 7.5f;       // px/tick: harder landings hurt
+    float landSpeed = 6.5f;       // px/tick: harder landings hurt (a drop of about 120 px)
     float landDamage = 12.0f;     // hp per px/tick above landSpeed
     float regen = 0.05f;          // hp per tick...
     int   regenDelay = 120;       // ...after this many ticks without damage
@@ -156,6 +157,7 @@ public:
     float centreY() const { return y_ - static_cast<float>(params_.height) * 0.5f; }
     float health() const { return health_; }
     bool  grounded() const { return grounded_; }
+    bool  gliding() const { return gliding_; }
     int   facing() const { return facing_; }
     int   groundBody() const { return groundBody_; }
     bool  covers(int wx, int wy) const; // the pixel is inside the capsule
@@ -217,6 +219,7 @@ private:
     bool  stuck_ = false;
     bool  ignorePowder_ = false;
     bool  wasJump_ = false;
+    bool  gliding_ = false;
     // environment, sensed each tick
     float submerged_ = 0, liquidDensity_ = 0, liquidViscosity_ = 0;
     // rope

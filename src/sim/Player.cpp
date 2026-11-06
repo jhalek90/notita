@@ -76,7 +76,7 @@ void Player::spawn(float x, float y) {
     rope_ = false;
     grounded_ = false;
     groundBody_ = 0;
-    airTicks_ = 0;
+    airTicks_ = params_.coyoteTicks + 1; // no coyote jump out of thin air
     sinceHurt_ = params_.regenDelay;
     spawnX_ = x;
     spawnY_ = y;
@@ -270,6 +270,11 @@ void Player::step(const PlayerInput& in) {
 
     // the gas grid: wind drag and pressure, sampled over the cells the capsule covers
     stats_.windX = stats_.windY = 0.0f;
+    // the cloak: holding jump while falling in the open spreads it, so the air holds the player up
+    // much more (vertically); a gentle updraft then carries it
+    gliding_ = in.jump && !grounded_ && !rope_ && submerged_ < 0.2f && (gliding_ || vy_ > -0.5f); // opens at the top of a jump, stays open
+    const float dragY = gliding_ ? P.glideDrag : P.gasDrag;
+    bool windSampled = false;
     if (gas_ && gas_->params().enabled && gas_->fields().w > 0) {
         const GasFields& f = gas_->fields();
         const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
@@ -292,7 +297,8 @@ void Player::step(const PlayerInput& in) {
             stats_.windY = wy;
             const float air = 1.0f - submerged_;
             ax += P.gasDrag * (wx - vx_) * air;
-            ay += P.gasDrag * (wy - vy_) * air;
+            ay += dragY * (wy - vy_) * air;
+            windSampled = true;
         }
         // pressure gradient across the capsule (open cells on both sides only)
         auto meanP = [&](int ia, int ib, int ja, int jb, bool& ok) {
@@ -310,6 +316,8 @@ void Player::step(const PlayerInput& in) {
         if (okL && okR) ax -= P.gasPush * (pr - pl) / static_cast<float>((i1 - i0 + 2) * kGasCell);
         if (okT && okB) ay -= P.gasPush * (pb - pt) / static_cast<float>((j1 - j0 + 2) * kGasCell);
     }
+
+    if (!windSampled) ay -= dragY * vy_ * (1.0f - submerged_); // still air (no grid)
 
     // ---- input ----
     if (in.move != 0.0f) facing_ = in.move > 0 ? 1 : -1;

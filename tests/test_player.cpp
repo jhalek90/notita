@@ -254,6 +254,32 @@ TEST_CASE(player_is_pushed_by_the_gas_grid_wind) {
     CHECK(ys[1] < ys[0] - 30.0f); // the updraft held it up
 }
 
+TEST_CASE(cloak_glide_falls_slowly_and_rides_a_gentle_updraft) {
+    float drop[3];
+    for (int mode = 0; mode < 3; ++mode) { // 0 fall, 1 glide, 2 glide in a 2 px/tick updraft
+        Fixture f(4, 4);
+        f.floor();
+        f.withGas();
+        f.player->spawn(128.5f, 80.0f);
+        f.in.jump = mode > 0;
+        f.tick(); // (a held jump in the air never jumps)
+        const float y0 = f.player->y();
+        for (int t = 0; t < 60; ++t) {
+            if (mode == 2) {
+                GasFields& g = f.gas->fields();
+                for (int j = 0; j <= g.h; ++j)
+                    for (int i = 24; i < 40; ++i) g.v[static_cast<std::size_t>(j) * g.w + i] = -0.5f; // 2 px/tick up
+            }
+            f.tick();
+        }
+        drop[mode] = f.player->y() - y0;
+        if (mode > 0) CHECK(f.player->gliding());
+    }
+    CHECK(drop[0] > 100.0f); // a plain fall goes a long way in a second
+    CHECK(drop[1] > 20.0f && drop[1] < 80.0f); // gliding sinks about 1 px/tick
+    CHECK(drop[2] < 0.0f);   // and a gentle updraft carries it up
+}
+
 TEST_CASE(player_is_hurt_by_heat_and_hard_landings) {
     Fixture f(2, 4); // 128 x 256
     f.floor();
@@ -353,6 +379,7 @@ TEST_CASE(play_inventory_has_limits_and_creative_has_none) {
     // creative: every material, nothing counted
     f.player->inventory().creative = true;
     f.in.place = true;
+    f.aim(60.0f, 105.0f);
     f.run(10);
     CHECK(f.world->count(wood) > 20);
     CHECK_EQ(f.player->inventory().count(wood), 0);

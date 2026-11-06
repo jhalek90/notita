@@ -558,6 +558,10 @@ void App::drawPlayer() {
                 col = 0xFF1E2D46u;
             }
             if (r == 3 && fx == 1) col = 0xFF1E1414u; // the eye
+            if (player_->gliding() && r >= 6 && r <= 12 && std::abs(dx) == pp.halfWidth) {
+                // the cloak spread out to the sides
+                for (int k = 1; k <= 3 && r - 6 >= k - 1; ++k) put(ix + dx + (dx > 0 ? k : -k), wy + k - 1, 0xFF6A7A26u);
+            }
             if (hurtW > 0) col = mixColor(col, 0xFF2020E0u, hurtW);
             put(ix + dx, wy, col);
         }
@@ -1008,7 +1012,8 @@ void App::drawPlayerUi() {
                 ps.windX, ps.windY);
     ImGui::Text("hottest nearby %.0f C, jet gas %lld units, deaths %d", ps.hottest, ps.jetMassTotal, ps.deaths);
     if (player_->roped()) ImGui::Text("rope %.0f px%s", player_->ropeLength(), player_->ropeBody() ? " (to a body)" : "");
-    ImGui::TextDisabled("A/D walk, W/Space jump & swim, S dive; P pause, T slow-mo, F7 leave");
+    ImGui::TextDisabled("A/D walk, W/Space jump & swim (hold in a fall to glide), S dive");
+    ImGui::TextDisabled("P pause, T slow-mo, F7 leave");
     ImGui::End();
 }
 
