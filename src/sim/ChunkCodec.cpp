@@ -81,15 +81,17 @@ bool rleDecode(ByteReader& in, std::uint8_t* data, std::size_t n) {
     return true;
 }
 
-std::uint8_t terrainShade(int x, int y) {
-    const std::uint64_t h = Rng::hash(static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) * 0x9E3779B1ull,
-                                      static_cast<std::uint32_t>(y));
-    return static_cast<std::uint8_t>(h >> 56);
-}
 
 namespace {
 
-constexpr std::uint8_t kCellFormat = 1;
+constexpr std::uint8_t kCellFormat = 1;        // shade relative to terrainShade
+constexpr std::uint8_t kCellFormatTexture = kCellBlobFormat; // #481: shade relative to the material texture
+
+// the shade the generator would give this pixel (the reference the shade plane is stored against)
+std::uint8_t refShade(const MaterialRegistry* mats, MaterialId m, int x, int y) {
+    if (mats && m < mats->size()) return (*mats)[m].shadeAt(x, y);
+    return terrainShade(x, y);
+}
 constexpr std::uint8_t kGasFormat = 2; // 2 (#480): + fuel and soot planes; 1 still reads
 
 void plane(ByteWriter& w, const std::uint8_t* p, std::size_t n) {
@@ -135,10 +137,10 @@ bool readPlanes4(ByteReader& r, T* v, std::size_t n) {
 
 } // namespace
 
-std::vector<std::uint8_t> encodeCells(const Chunk& chunk) {
+std::vector<std::uint8_t> encodeCells(const Chunk& chunk, const MaterialRegistry* mats) {
     constexpr std::size_t N = kChunkCells;
     ByteWriter w;
-    w.u8(kCellFormat);
+    w.u8(mats ? kCellFormatTexture : kCellFormat);
     // palette in order of first appearance (deterministic)
     std::vector<MaterialId> palette;
     std::array<std::uint8_t, N> idx{};
@@ -170,7 +172,7 @@ std::vector<std::uint8_t> encodeCells(const Chunk& chunk) {
     const int ox = chunk.originX(), oy = chunk.originY();
     for (std::size_t i = 0; i < N; ++i) {
         const int x = ox + static_cast<int>(i & kChunkMask), y = oy + static_cast<int>(i >> kChunkShift);
-        b[i] = static_cast<std::uint8_t>(chunk.cells[i].shade - terrainShade(x, y));
+        b[i] = static_cast<std::uint8_t>(chunk.cells[i].shade - refShade(mats, chunk.cells[i].material, x, y));
     }
     plane(w, b.data(), N);
     {
@@ -194,10 +196,13 @@ std::vector<std::uint8_t> encodeCells(const Chunk& chunk) {
     return std::move(w.buf);
 }
 
-bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std::vector<MaterialId>* remap) {
+bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std::vector<MaterialId>* remap,
+                 const MaterialRegistry* mats) {
     constexpr std::size_t N = kChunkCells;
     ByteReader r(blob.data(), blob.size());
-    if (r.u8() != kCellFormat) return false;
+    const std::uint8_t format = r.u8();
+    if (format != kCellFormat && format != kCellFormatTexture) return false;
+    const MaterialRegistry* ref = format == kCellFormatTexture ? mats : nullptr;
     const bool wide = r.u8() != 0;
     std::array<std::uint8_t, N> b{}, b2{};
     std::array<MaterialId, N> mat{};
@@ -222,7 +227,10 @@ bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std:
     const int ox = chunk.originX(), oy = chunk.originY();
     for (std::size_t i = 0; i < N; ++i) {
         const int x = ox + static_cast<int>(i & kChunkMask), y = oy + static_cast<int>(i >> kChunkShift);
-        chunk.cells[i].shade = static_cast<std::uint8_t>(b[i] + terrainShade(x, y));
+        // format 1 (before #481) with a registry: a zero delta is untouched terrain,
+        // which takes its material's texture now, so old saves get textured ground too
+        if (format == kCellFormat && mats && b[i] == 0) chunk.cells[i].shade = refShade(mats, chunk.cells[i].material, x, y);
+        else chunk.cells[i].shade = static_cast<std::uint8_t>(b[i] + refShade(ref, chunk.cells[i].material, x, y));
     }
     {
         std::array<float, N> t{};

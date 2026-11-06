@@ -4,6 +4,7 @@
 // without touching the parser. Phase 2 adds heat, state changes and fire;
 // reactions between materials live in data/reactions.luau (see Reactions.h).
 #include "Cell.h"
+#include "Texture.h"
 
 #include <array>
 #include <cstdint>
@@ -101,6 +102,10 @@ struct Material {
 
     std::unordered_map<std::string, std::string> extra; // unknown keys, for later phases
 
+    // #481: per-pixel texture (palette + layered noise, keys in data/materials.txt);
+    // disabled = the old brightness ramp with a hashed shade
+    MaterialTexture texture;
+
     std::array<std::uint32_t, 256> palette{}; // colour per shade, filled by the registry
 
     // things others can move through (flames count: sand falls through fire)
@@ -111,6 +116,9 @@ struct Material {
     bool moves() const { return kind == MaterialKind::Powder || kind == MaterialKind::Liquid || kind == MaterialKind::Gas; }
     bool flammable() const { return ignitePoint < kNoPoint && burnTime > 0 && burnsInto.valid; }
     bool isFlame() const { return kind == MaterialKind::Special; }
+    // The shade a freshly made pixel of this material gets at (x, y): its texture
+    // sampled in world space (along = beam direction for grain, 0 = x, 1 = y).
+    std::uint8_t shadeAt(int x, int y, int along = 0) const { return textureShade(texture, x, y, along); }
     // a cell of this material with its spawn temperature
     Cell spawn(std::uint8_t shade) const {
         Cell c;

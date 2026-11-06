@@ -145,7 +145,7 @@ StoredChunk& Streamer::storeEntry(int cx, int cy) {
     scratch.coord = {cx, cy};
     gen_.generate(scratch);
     StoredChunk sc;
-    sc.cells = encodeCells(scratch);
+    sc.cells = encodeCells(scratch, &mats_);
     sc.mass = cellsMass(scratch, mats_);
     sc.next = {0, 0, kChunkMask, kChunkMask}; // fresh terrain settles when it wakes
     sc.heatNext = true;
@@ -196,9 +196,9 @@ bool Streamer::follow(float x, float y) {
     return true;
 }
 
-StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas) {
+StoredChunk Streamer::encodeLive(const Chunk& c, bool clearGas, std::vector<std::uint8_t>* cells) {
     StoredChunk sc;
-    sc.cells = encodeCells(c);
+    sc.cells = cells ? std::move(*cells) : encodeCells(c, &mats_);
     sc.mass = cellsMass(c, mats_);
     if (gas_) {
         GasGrid::ChunkCells g;
@@ -253,7 +253,7 @@ void Streamer::wakeChunk(int cx, int cy, bool decoded) {
         ++stats_.generated;
     } else {
         StoredChunk& sc = it->second;
-        if (!decoded) decodeCells(sc.cells, *c);
+        if (!decoded) decodeCells(sc.cells, *c, nullptr, &mats_);
         if (!sc.next.empty()) c->nextRect.include(sc.next.x0, sc.next.y0, sc.next.x1, sc.next.y1);
         c->heatNext.store(sc.heatNext, std::memory_order_relaxed);
         if (gas_ && !sc.gas.empty()) {
@@ -286,7 +286,7 @@ void Streamer::shiftTo(int cx0, int cy0) {
         std::vector<StoredChunk> enc(leaving.size());
         parallel(static_cast<int>(leaving.size()), [&](int i) {
             const Chunk& c = *world_.chunk(leaving[i].x, leaving[i].y);
-            enc[i].cells = encodeCells(c);
+            enc[i].cells = encodeCells(c, &mats_);
             enc[i].mass = cellsMass(c, mats_);
             enc[i].next = c.nextRect.peek();
             enc[i].heatNext = c.heatNext.load(std::memory_order_relaxed);
@@ -308,7 +308,7 @@ void Streamer::shiftTo(int cx0, int cy0) {
         parallel(static_cast<int>(fresh.size()), [&](int i) {
             auto it = store_.find(chunkKey(fresh[i].x, fresh[i].y));
             if (it == store_.end()) gen_.generate(*made[i]);
-            else decodeCells(it->second.cells, *made[i]);
+            else decodeCells(it->second.cells, *made[i], nullptr, &mats_);
         });
         for (const ChunkCoord& c : fresh) wakeChunk(c.x, c.y, true);
     }
@@ -393,7 +393,10 @@ bool Streamer::saveToBytes(std::vector<std::uint8_t>& out, const SaveExtras& ext
         for (const BodyState& b : sc.bodies) writeBody(w, b);
         w.blob(sc.electric); // v2
     };
-    for (const Chunk* c : live) writeChunk(c->coord.x, c->coord.y, encodeLive(*c, false));
+    // the cell blobs sample every textured pixel's texture (#481): encode them in parallel
+    std::vector<std::vector<std::uint8_t>> liveCells(live.size());
+    parallel(static_cast<int>(live.size()), [&](int i) { liveCells[static_cast<std::size_t>(i)] = encodeCells(*live[static_cast<std::size_t>(i)], &mats_); });
+    for (std::size_t i = 0; i < live.size(); ++i) writeChunk(live[i]->coord.x, live[i]->coord.y, encodeLive(*live[i], false, &liveCells[i]));
     for (const auto& [key, sc] : store_)
         writeChunk(static_cast<std::int32_t>(key >> 32), static_cast<std::int32_t>(key & 0xFFFFFFFFu), sc);
     // the awake window's particles and bodies
@@ -502,6 +505,10 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
     const std::uint32_t nc = r.u32();
     if (!r.ok()) return fail("truncated save");
     std::map<std::uint64_t, StoredChunk> store;
+    // same ids as now: a current-format cell blob can be kept as it is (re-encoding
+    // it would sample every pixel's texture twice for nothing)
+    bool sameIds = true;
+    for (std::size_t i = 0; i < remap.size(); ++i) sameIds = sameIds && remap[i] == static_cast<MaterialId>(i);
     long long mass = 0;
     std::int64_t gasMass = 0;
     Chunk scratch;
@@ -515,8 +522,10 @@ bool Streamer::loadFromBytes(const std::vector<std::uint8_t>& in, SaveExtras& ex
         const std::vector<std::uint8_t> gas = r.blob();
         if (!r.ok()) return fail("truncated chunk");
         scratch.coord = {cx, cy};
-        if (!decodeCells(cells, scratch, &remap)) return fail("corrupt chunk cells");
-        sc.cells = encodeCells(scratch);
+        const bool keep = sameIds && !cells.empty() && cells[0] == kCellBlobFormat;
+        // kept blobs only need the materials (for the mass), not the texture reference
+        if (!decodeCells(cells, scratch, &remap, keep ? nullptr : &mats_)) return fail("corrupt chunk cells");
+        sc.cells = keep ? cells : encodeCells(scratch, &mats_);
         sc.mass = cellsMass(scratch, mats_);
         if (!gas.empty() && curSpecies > 0) {
             GasGrid::ChunkCells g;

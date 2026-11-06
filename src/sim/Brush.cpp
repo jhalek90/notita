@@ -35,7 +35,7 @@ int applyBrush(World& world, const MaterialRegistry& mats, const Brush& brush, i
                 if (k != MaterialKind::Empty && k != MaterialKind::Gas) continue;
             }
             if (c->material == brush.material && brush.mode != BrushMode::Replace) continue;
-            world.setCell(x + dx, y + dy, mats[brush.material].spawn(static_cast<std::uint8_t>(rng.below(256))));
+            world.setCell(x + dx, y + dy, mats[brush.material].spawn(mats[brush.material].shadeAt(x + dx, y + dy)));
             ++changed;
         }
     return changed;

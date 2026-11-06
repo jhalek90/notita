@@ -51,6 +51,7 @@ struct AppOptions {
     bool oldMotion = false;     // #477: start with the phase 1 powder / liquid rules (F10 flips)
     bool lockstep = false;      // exactly one sim tick per frame (comparable screenshots)
     bool oldFlames = false;     // #480: start with flames as pixels (F11 flips)
+    bool noRelief = false;      // #481: start without the surface relief / wet look (F12 flips)
     bool at = false;            // --at x,y: put the player (feet) there at start (screenshots of a room)
     float atX = 0, atY = 0;
 };
@@ -221,6 +222,15 @@ private:
     bool newLook_ = true, newMotion_ = true, smoothPowder_ = true, calmLiquid_ = true, liquidWobble_ = true;
     bool liquidDrawn_ = false;
     float liquidTime_ = 0.0f;
+
+    // ---- #481: surface relief and wet look on textured materials (AppTexture.cpp) ----
+    void rebuildSurfaceKinds(); // per material: open / dense (solid, powder) / liquid
+    void applyRelief();         // in drawWorld, after the cells are copied
+    void drawTextureUi();
+    bool relief_ = true;
+    float reliefStrength_ = 1.0f, wetness_ = 1.0f;
+    std::vector<std::uint8_t> matSurface_; // per material
+    std::vector<std::uint8_t> viewMask_;   // per view pixel, scratch
 
     // ---- #480: flames as hot glowing gas on the grid (AppFlame.cpp) ----
     void initFlame();         // after initLiquid: tints + the GPU flame pass

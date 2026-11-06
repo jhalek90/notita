@@ -6,13 +6,16 @@
 // bytes of the temperature, velocity, flags, life, aux, stamp) and every plane
 // is run-length encoded (PackBits style). A palette maps the chunk's few
 // materials to one byte. Shade is stored as the difference to the shade the
-// world generator gives that pixel, so untouched terrain is all zeros. A rock
+// world generator gives that pixel (format 2, #481: the material's texture at
+// that spot, Material::shadeAt; format 1: terrainShade), so untouched terrain
+// is all zeros. A rock
 // chunk at ambient temperature shrinks from 64 KiB to a few hundred bytes.
 //
 // The gas grid cells over the chunk (GasGrid::ChunkCells) are encoded the
 // same way (int32/float values split into byte planes, each RLE'd).
 #include "Chunk.h"
 #include "GasGrid.h"
+#include "Texture.h"
 
 #include <cstdint>
 #include <string>
@@ -67,12 +70,15 @@ private:
 void rleEncode(const std::uint8_t* data, std::size_t n, std::vector<std::uint8_t>& out);
 bool rleDecode(ByteReader& in, std::uint8_t* data, std::size_t n);
 
-// Shade the generator gives a pixel (deterministic per position).
-std::uint8_t terrainShade(int x, int y);
-
-// remap: material id in the blob -> current id (null = identity).
-std::vector<std::uint8_t> encodeCells(const Chunk& chunk);
-bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std::vector<MaterialId>* remap = nullptr);
+// remap: material id in the blob -> current id (null = identity). With mats the
+// shades are stored relative to each material's texture (format 2), without it
+// relative to terrainShade (format 1); both formats decode (format 2 without
+// mats falls back to terrainShade, so only the look changes). Format 1 read
+// with mats gives untouched terrain (zero delta) its material's texture.
+std::vector<std::uint8_t> encodeCells(const Chunk& chunk, const MaterialRegistry* mats = nullptr);
+constexpr std::uint8_t kCellBlobFormat = 2; // the first byte of a cell blob encoded with mats
+bool decodeCells(const std::vector<std::uint8_t>& blob, Chunk& chunk, const std::vector<MaterialId>* remap = nullptr,
+                 const MaterialRegistry* mats = nullptr);
 
 // speciesRemap: species index in the blob -> current index (-1 = dropped; null = identity).
 std::vector<std::uint8_t> encodeGas(const GasGrid::ChunkCells& cells);

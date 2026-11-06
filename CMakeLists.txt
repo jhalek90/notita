@@ -23,6 +23,7 @@ endif()
 # ---- Simulation core: no SDL dependency, so tests and the benchmark stay light ----
 add_library(notita_sim STATIC
     src/sim/Material.cpp
+    src/sim/Texture.cpp
     src/sim/World.cpp
     src/sim/Simulator.cpp
     src/sim/ThreadPool.cpp
@@ -74,7 +75,7 @@ endif()
 
 if(NOTITA_BUILD_TESTS)
     enable_testing()
-    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp tests/test_flames.cpp)
+    add_executable(notita_tests tests/test_main.cpp tests/test_sim.cpp tests/test_heat.cpp tests/test_gas.cpp tests/test_phase4.cpp tests/test_player.cpp tests/test_world.cpp tests/test_electric.cpp tests/test_showcase.cpp tests/test_flames.cpp tests/test_texture.cpp)
     target_link_libraries(notita_tests PRIVATE notita_sim notita_script)
     add_test(NAME notita_tests COMMAND notita_tests)
     target_sources(notita_tests PRIVATE tests/test_light.cpp)
@@ -96,6 +97,7 @@ if(NOTITA_BUILD_APP)
     target_sources(notita PRIVATE src/app/GpuLiquid.cpp src/app/AppLiquid.cpp)
     # #480: the flame pass (GpuFlame + its App side)
     target_sources(notita PRIVATE src/app/GpuFlame.cpp src/app/AppFlame.cpp)
+    target_sources(notita PRIVATE src/app/AppTexture.cpp)
     target_link_libraries(notita PRIVATE notita_light)
     # version info: the exe stays notita.exe but describes itself as Fine Grain
     if(WIN32)

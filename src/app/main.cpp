@@ -36,6 +36,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--old-motion")) opts.oldMotion = true; // #477: phase 1 powder/liquid rules
         else if (!std::strcmp(argv[i], "--lockstep")) opts.lockstep = true;    // one tick per frame
         else if (!std::strcmp(argv[i], "--old-flames")) opts.oldFlames = true; // #480: flames as pixels
+        else if (!std::strcmp(argv[i], "--no-relief")) opts.noRelief = true; // #481: no surface relief / wet look
         else if (!std::strcmp(argv[i], "--light-cpu")) opts.lightCpu = true;
         else if (!std::strcmp(argv[i], "--light-selftest")) opts.lightSelfTest = true;
         else if (!std::strcmp(argv[i], "--load")) { opts.load = next(); opts.scene = "world"; }

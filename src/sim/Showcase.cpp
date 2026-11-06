@@ -67,6 +67,31 @@ struct ShowcasePainter {
     enum Look : std::uint8_t { Hash, Formwork, GrainH, GrainV, Panel };
 
     std::uint8_t shadeFor(MaterialId m, Look look, int x, int y) const {
+        const Material& mat = mats[m];
+        if (mat.texture.enabled) {
+            // #481: the material's own texture, plus the joints the building needs
+            switch (look) {
+            case Formwork: {
+                // cast concrete: form panels with dark joints and tie holes over the aggregate
+                const std::uint8_t t = mat.shadeAt(x, y);
+                const int px = ((x % 48) + 48) % 48, py = ((y % 32) + 32) % 32;
+                if (px == 0 || py == 0) return makeShade(shadeSlot(t), std::min<int>(shadeLevel(t), 4));
+                if ((px == 12 || px == 36) && (py == 8 || py == 24)) return makeShade(shadeSlot(t), 1);
+                return t;
+            }
+            case GrainH: return mat.shadeAt(x, y, 0);
+            case GrainV: return mat.shadeAt(x, y, 1);
+            case Panel: {
+                // brick courses: 4 px high, 10 px long, every other course shifted by half
+                const std::uint8_t t = mat.shadeAt(x, y);
+                const int row = static_cast<int>(std::floor(static_cast<float>(y) / 4.0f));
+                const int bx = ((x + (row & 1) * 5) % 10 + 10) % 10, by = ((y % 4) + 4) % 4;
+                if (bx == 0 || by == 0) return makeShade(shadeSlot(t), std::min<int>(shadeLevel(t), 3));
+                return t;
+            }
+            default: return mat.shadeAt(x, y);
+            }
+        }
         const std::uint32_t h = hash2(x, y);
         switch (look) {
         case Formwork: {
@@ -87,7 +112,7 @@ struct ShowcasePainter {
             return static_cast<std::uint8_t>(std::clamp(v, 1, 255));
         }
         case Panel: return static_cast<std::uint8_t>(110 + (h & 63));
-        default: (void)m; return 0;
+        default: return 0;
         }
     }
 
@@ -605,7 +630,7 @@ bool Showcase::cellAt(int x, int y, Cell& out) const {
     const std::uint16_t m = mat_[i];
     if (m == kGenerated) return false;
     if (m == kEmpty) { out = Cell{}; return true; }
-    out = mats_[m].spawn(shade_[i] ? shade_[i] : terrainShade(x, y));
+    out = mats_[m].spawn(shade_[i] ? shade_[i] : mats_[m].shadeAt(x, y));
     if (mats_[m].kind == MaterialKind::Solid) out.aux = hold_[i] == Pinned ? kAuxPinned : (hold_[i] == Loose ? kAuxSettled : 0);
     return true;
 }
