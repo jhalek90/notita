@@ -640,7 +640,10 @@ void GasGrid::condense() {
                     if (!cell || cell->material != kEmpty) continue;
                     const float eGas = unitCap * (tg - kAmbientTemp);
                     const float eAir = airCap * (cell->temperature - kAmbientTemp);
-                    Cell nc = into.spawn(static_cast<std::uint8_t>(rng.below(256)));
+                    // #481: the drop takes its material's texture at this spot; the old shade
+                    // draw stays so the RNG stream (and so the sim) is unchanged
+                    (void)rng.below(256);
+                    Cell nc = into.spawn(into.shadeAt(x, y));
                     nc.temperature = std::clamp(kAmbientTemp + (eGas + eAir + latent) / into.heatCapacity, kMinTemp, kMaxTemp);
                     *cell = nc;
                     wakePx(x, y);
