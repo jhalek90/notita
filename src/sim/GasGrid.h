@@ -154,6 +154,11 @@ public:
     // A blast centred at a world pixel: an expansion source, heat and a kick
     // to the loose pixels in the radius.
     void explode(int x, int y, int radius, float power);
+    // A jet (phase 5): `mass` units of gas enter the grid at (x, y) right away
+    // (exactly like an emission from the sim, so mass is kept), and the faces
+    // of that cell and the next one along (vx, vy) (px/tick) are pushed that
+    // way on the next step. mass 0 just blows.
+    void jet(int x, int y, MaterialId gas, int mass, float temperature, float vx, float vy);
     // Removes all gas and motion (the heat of the gas is counted as lost).
     void clear();
 
@@ -233,6 +238,9 @@ private:
     struct Blast { int x, y, radius; float power; };
     std::vector<Blast> blasts_;         // grid side of explode(), applied after the obstacles are rebuilt
     void applyBlast(const Blast& b);
+    struct Kick { int x, y; float vx, vy; };
+    std::vector<Kick> kicks_;           // grid side of jet()
+    void applyKick(const Kick& k);
     double lostHeat_ = 0, sourceHeat_ = 0, latentHeat_ = 0;
     long long absorbedPending_ = 0;
     ParticleSystem* particles_ = nullptr;

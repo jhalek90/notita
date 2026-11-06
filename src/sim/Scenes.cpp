@@ -267,6 +267,70 @@ void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed) {
     rect("sand", 480, 320, 630, 351);
 }
 
+void playground(World& w, const MaterialRegistry& mats, std::uint64_t seed, float* spawnX, float* spawnY) {
+    Rng rng(seed);
+    w.clear();
+    const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
+    auto id = [&](const char* n) { return mats.idOf(n); };
+    // laid out for the app's 1024 x 512 world; x positions are scaled to other widths
+    const float sx = static_cast<float>(W) / 1024.0f;
+    auto px = [&](int x) { return static_cast<int>(static_cast<float>(x) * sx); };
+    auto rect = [&](const char* m, int x0, int y0, int x1, int y1) {
+        fillSpawn(w, mats, id(m), X + px(x0), Y + y0, X + px(x1), Y + y1, rng);
+    };
+    auto air = [&](int x0, int y0, int x1, int y1) { fillRect(w, kEmpty, X + px(x0), Y + y0, X + px(x1), Y + y1, rng); };
+    const int G = H - 112; // the ground line (y 400 in a 512 px world)
+
+    rect("bedrock", 0, H - 8, 1023, H - 1);
+    rect("slate", 0, G + 24, 1023, H - 9);
+    rect("sand", 0, G, 1023, G + 23);
+    rect("cinder_grit", 0, G + 14, 1023, G + 23);
+
+    // 1. a hill to dig through (or jet, blast or build over): a slate core under sand and grit
+    for (int x = 150; x <= 300; ++x) {
+        const float t = static_cast<float>(x - 150) / 150.0f;
+        const int top = G - static_cast<int>(56.0f * (1.0f - (2.0f * t - 1.0f) * (2.0f * t - 1.0f)));
+        rect("sand", x, top, x, G - 1);
+        if (top < G - 14) rect("slate", x, top + 10, x, G - 1);
+        if (top < G - 30) rect("cinder_grit", x, top + 4, x, top + 9);
+    }
+
+    // 2. a lake to swim in, freeze or cross on a raft (a slate basin, water 10 px below the shore)
+    air(326, G, 614, G + 74);
+    rect("slate", 326, G, 329, G + 74);
+    rect("slate", 611, G, 614, G + 74);
+    rect("slate", 326, G + 71, 614, G + 74);
+    rect("water", 330, G + 10, 610, G + 70);
+
+    // 3. a cliff with an overhang to swing from, and an updraft shaft beside it over an iron plate
+    //    heated by magma underneath (the hot air rises up the shaft; the plate itself is hot)
+    rect("slate", 660, G - 200, 720, G - 1);
+    rect("slate", 630, G - 200, 659, G - 192);
+    rect("slate", 790, G - 170, 798, G - 32);
+    rect("slate", 721, G, 789, G + 26);
+    rect("magma", 727, G + 2, 783, G + 20);
+    rect("iron", 721, G - 4, 789, G - 1);
+    rect("glass", 680, G - 212, 700, G - 201); // a beacon on top of the cliff
+    rect("iron", 686, G - 220, 694, G - 213);
+
+    // 4. a tub of quickmetal: even slate floats on it
+    air(870, G, 970, G + 34);
+    rect("slate", 870, G, 873, G + 34);
+    rect("slate", 967, G, 970, G + 34);
+    rect("slate", 870, G + 31, 970, G + 34);
+    rect("quickmetal", 874, G + 6, 966, G + 30);
+
+    pinRect(w, mats, X, Y, X + W - 1, Y + H - 1); // the scene stays put...
+
+    // ...but these are live: two timber planks on the lake and a slate slab on the quickmetal become rafts
+    rect("timber", 370, G + 2, 417, G + 7);
+    rect("timber", 510, G + 2, 557, G + 7);
+    rect("slate", 896, G + 0, 943, G + 5);
+
+    if (spawnX) *spawnX = static_cast<float>(X + px(60)) + 0.5f;
+    if (spawnY) *spawnY = static_cast<float>(Y + G);
+}
+
 void flipVertical(World& w) {
     const int X = w.minX(), Y = w.minY(), W = w.widthPx(), H = w.heightPx();
     for (int y = 0; y < H / 2; ++y)

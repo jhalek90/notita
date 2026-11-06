@@ -112,6 +112,7 @@ void GasGrid::absorb(const GasEmission* e, std::size_t count) {
 }
 
 void GasGrid::clear() {
+    kicks_.clear();
     lostHeat_ += heatEnergy();
     std::fill(f_.u.begin(), f_.u.end(), 0.0f);
     std::fill(f_.v.begin(), f_.v.end(), 0.0f);
@@ -521,6 +522,43 @@ void GasGrid::expandPockets() {
         }
 }
 
+void GasGrid::jet(int x, int y, MaterialId gas, int mass, float temperature, float vx, float vy) {
+    if (f_.w <= 0) return;
+    if (mass > 0 && speciesOf(gas) >= 0) {
+        GasEmission e;
+        e.x = x;
+        e.y = y;
+        e.material = gas;
+        e.mass = mass;
+        e.temperature = temperature;
+        absorb(&e, 1);
+    }
+    kicks_.push_back({x, y, vx, vy});
+}
+
+void GasGrid::applyKick(const Kick& k) {
+    const int w = f_.w, h = f_.h;
+    const float cu = std::clamp(k.vx / kGasCell, -sp_.maxSpeed, sp_.maxSpeed);
+    const float cv = std::clamp(k.vy / kGasCell, -sp_.maxSpeed, sp_.maxSpeed);
+    const float len = std::sqrt(k.vx * k.vx + k.vy * k.vy);
+    const float sx = len > 0.0f ? k.vx / len : 0.0f, sy = len > 0.0f ? k.vy / len : 0.0f;
+    for (int s = 0; s < 3; ++s) {
+        // the nozzle cell and the next two along the jet
+        const int i = (k.x + static_cast<int>(std::lround(sx * kGasCell * s)) - ox_) / kGasCell;
+        const int j = (k.y + static_cast<int>(std::lround(sy * kGasCell * s)) - oy_) / kGasCell;
+        if (i < 0 || j < 0 || i >= w || j >= h || f_.open[j * w + i] <= 0.0f) continue;
+        const float keep = 0.35f; // blend the faces towards the jet speed
+        float& ul = f_.u[j * (w + 1) + i];
+        float& ur = f_.u[j * (w + 1) + i + 1];
+        float& vt = f_.v[j * w + i];
+        float& vb = f_.v[(j + 1) * w + i];
+        ul = ul * keep + cu * (1.0f - keep);
+        ur = ur * keep + cu * (1.0f - keep);
+        vt = vt * keep + cv * (1.0f - keep);
+        vb = vb * keep + cv * (1.0f - keep);
+    }
+}
+
 void GasGrid::explode(int x, int y, int radius, float power) {
     if (f_.w <= 0 || radius <= 0 || power <= 0.0f) return;
     blasts_.push_back({x, y, radius, power});
@@ -593,6 +631,8 @@ void GasGrid::step() {
     stats_.obstaclesMs = msSince(t0);
     for (const Blast& b : blasts_) applyBlast(b);
     blasts_.clear();
+    for (const Kick& k : kicks_) applyKick(k);
+    kicks_.clear();
     moveTrapped();
     exchangeHeat();
     burnGas();

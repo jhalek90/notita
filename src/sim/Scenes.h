@@ -40,6 +40,12 @@ void gasLab(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 // a timber post that burns through, and a boulder teetering on a ledge.
 void quarry(World& w, const MaterialRegistry& mats, std::uint64_t seed);
 
+// Phase 5 playground for the player: a hill to dig through, a lake with timber
+// rafts, a cliff with an overhang to grapple and an updraft shaft over a
+// magma-heated iron plate, and a quickmetal tub with a floating slate slab.
+// Writes the player's spawn point (feet) if asked.
+void playground(World& w, const MaterialRegistry& mats, std::uint64_t seed, float* spawnX = nullptr, float* spawnY = nullptr);
+
 // Turn the world upside down (sustained benchmark load: everything falls again).
 void flipVertical(World& w);
 

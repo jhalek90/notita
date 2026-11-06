@@ -16,6 +16,7 @@ namespace {
 
 constexpr float kTickSeconds = 1.0f / 60.0f;
 constexpr std::int32_t kHidden = INT32_MIN;
+constexpr int kPoolDepth = 6; // buoyancy: liquid beside a body counts when it is this deep below that point
 
 double msSince(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -627,6 +628,145 @@ void BodySystem::applyGas(RigidBody& b) {
     b2Body_ApplyForceToCenter(id, {mass * ax * k, mass * ay * k}, true);
 }
 
+// Buoyancy (phase 5). The body is out of the grid here (unstamped), so the
+// liquid around it shows where the surface is: the highest liquid pixel
+// beside one of its pixels with a column of liquid under it (so drops on the
+// deck or running down its side don't count) sets the waterline, and every body pixel at or below it
+// displaces liquid. Archimedes on those pixels, at their centroid (so a raft
+// rights itself), and drag on the submerged share.
+void BodySystem::applyLiquid(RigidBody& b) {
+    b.submerged = 0;
+    b.floats = false;
+    if (!params_.buoyancy || b.pixels.empty()) return;
+    const std::size_t i = static_cast<std::size_t>(&b - bodies_.data());
+    const b2BodyId id = impl_->ids[i];
+    auto cellOf = [&](std::size_t k, int& x, int& y) {
+        if (b.stampX[k] != kHidden) { x = b.stampX[k]; y = b.stampY[k]; return; }
+        float wx, wy;
+        b.toWorld(b.pixels[k], wx, wy);
+        x = static_cast<int>(std::floor(wx));
+        y = static_cast<int>(std::floor(wy));
+    };
+    auto liquidAt = [&](int x, int y) -> const Material* {
+        const Cell* c = world_.cell(x, y);
+        if (!c || (c->flags & kFlagBody)) return nullptr;
+        const Material& m = mats_[c->material];
+        return m.kind == MaterialKind::Liquid ? &m : nullptr;
+    };
+    // the pool surface in the columns just left and right of the body
+    int x0 = INT_MAX, x1 = INT_MIN, y0 = INT_MAX, y1 = INT_MIN;
+    for (std::size_t k = 0; k < b.pixels.size(); ++k) {
+        int x, y;
+        cellOf(k, x, y);
+        x0 = std::min(x0, x); x1 = std::max(x1, x);
+        y0 = std::min(y0, y); y1 = std::max(y1, y);
+    }
+    long long lineSum = 0;
+    double rho = 0.0;
+    int nrho = 0;
+    for (int side = 0; side < 2; ++side)
+        for (int off = 1; off <= 3; ++off) {
+            const int cx = side == 0 ? x0 - off : x1 + off;
+            int surface = INT_MIN;
+            const Material* m = nullptr;
+            for (int y = y0 - 8; y <= y1 && surface == INT_MIN; ++y) {
+                m = liquidAt(cx, y);
+                if (!m) continue;
+                bool pool = true; // a pool, not drops: liquid all the way down a few pixels
+                for (int d = 1; d < kPoolDepth && pool; ++d) pool = liquidAt(cx, y + d) != nullptr;
+                if (pool) surface = y;
+            }
+            if (surface == INT_MIN) continue;
+            lineSum += surface;
+            rho += m->density;
+            ++nrho;
+        }
+    const int line = nrho > 0 ? static_cast<int>(lineSum / nrho) : INT_MAX;
+    if (nrho == 0) return;
+    rho /= nrho;
+    // a column only displaces liquid when liquid is right under it: the automaton's liquid
+    // doesn't rise into an air pocket under a body, so a pocket gives no lift and the body
+    // settles into it instead of hovering on it
+    std::vector<int> bottom(static_cast<std::size_t>(x1 - x0 + 1), INT_MIN);
+    for (std::size_t k = 0; k < b.pixels.size(); ++k) {
+        int x, y;
+        cellOf(k, x, y);
+        int& bt = bottom[static_cast<std::size_t>(x - x0)];
+        bt = std::max(bt, y);
+    }
+    std::vector<std::uint8_t> wet(bottom.size(), 0);
+    for (std::size_t c = 0; c < bottom.size(); ++c) {
+        const int x = x0 + static_cast<int>(c), bt = bottom[c];
+        if (bt == INT_MIN) continue;
+        for (int d = 1; d <= 2 && !wet[c]; ++d) {
+            const Cell* under = world_.cell(x, bt + d);
+            if (!under) break;
+            if (liquidAt(x, bt + d)) wet[c] = 1;
+            else if (under->material != kEmpty) break; // resting on something: no pocket here
+        }
+    }
+    float cx = 0, cy = 0;
+    int n = 0;
+    for (std::size_t k = 0; k < b.pixels.size(); ++k) {
+        int x, y;
+        cellOf(k, x, y);
+        if (y < line || !wet[static_cast<std::size_t>(x - x0)]) continue;
+        cx += static_cast<float>(x) + 0.5f;
+        cy += static_cast<float>(y) + 0.5f;
+        ++n;
+    }
+    if (n == 0) return;
+    b.submerged = n;
+    const float pxArea = impl_->toM(1.0f) * impl_->toM(1.0f);
+    const float mass = b2Body_GetMass(id);
+    const float meanDensity = mass / (pxArea * static_cast<float>(b.pixels.size())) * 1000.0f;
+    b.floats = rho > meanDensity;
+    const float g = b2World_GetGravity(impl_->world).y;
+    const float lift = static_cast<float>(rho / 1000.0) * static_cast<float>(n) * pxArea * g;
+    const float fn = static_cast<float>(n);
+    b2Body_ApplyForce(id, {0.0f, -lift}, {impl_->toM(cx / fn), impl_->toM(cy / fn)}, true);
+    const float frac = fn / static_cast<float>(b.pixels.size());
+    const float k = params_.liquidDrag * frac;
+    const b2Vec2 v = b2Body_GetLinearVelocity(id);
+    b2Body_ApplyForceToCenter(id, {-mass * k * v.x, -mass * k * v.y}, true);
+    b2Body_ApplyTorque(id, -b2Body_GetRotationalInertia(id) * k * b2Body_GetAngularVelocity(id), true);
+}
+
+int BodySystem::bodyAt(int x, int y) const {
+    const Cell* c = world_.cell(x, y);
+    if (!c || !(c->flags & kFlagBody)) return 0;
+    for (const RigidBody& b : bodies_)
+        for (std::size_t k = 0; k < b.pixels.size(); ++k)
+            if (b.stampX[k] == x && b.stampY[k] == y) return b.id;
+    return 0;
+}
+
+const RigidBody* BodySystem::body(int id) const {
+    for (const RigidBody& b : bodies_)
+        if (b.id == id) return &b;
+    return nullptr;
+}
+
+bool BodySystem::velocityAt(int id, float wx, float wy, float& vx, float& vy) const {
+    const RigidBody* b = body(id);
+    if (!b) return false;
+    pointVelocity(*b, wx, wy, vx, vy);
+    return true;
+}
+
+bool BodySystem::applyImpulse(int id, float wx, float wy, float ix, float iy) {
+    for (std::size_t i = 0; i < bodies_.size(); ++i) {
+        if (bodies_[i].id != id) continue;
+        const float pxArea = impl_->toM(1.0f) * impl_->toM(1.0f); // one water pixel has Box2D mass pxArea (density 1)
+        b2Body_ApplyLinearImpulse(impl_->ids[i], {pxArea * impl_->velToM(ix), pxArea * impl_->velToM(iy)},
+                                  {impl_->toM(wx), impl_->toM(wy)}, true);
+        bodies_[i].awake = true;
+        bodies_[i].asleep = 0;
+        return true;
+    }
+    return false;
+}
+
 void BodySystem::explode(int x, int y, int radius, float power) {
     if (radius <= 0 || power <= 0.0f) return;
     for (std::size_t i = 0; i < bodies_.size(); ++i) {
@@ -705,6 +845,7 @@ void BodySystem::step() {
     for (std::size_t i = 0; i < bodies_.size(); ++i) {
         RigidBody& b = bodies_[i];
         applyGas(b);
+        applyLiquid(b);
         const b2Vec2 v = b2Body_GetLinearVelocity(impl_->ids[i]); // the velocity going into the step
         b.vx = impl_->velToPx(v.x);
         b.vy = impl_->velToPx(v.y);
@@ -737,7 +878,7 @@ void BodySystem::step() {
             shatter(b); // replaces this entry; fragments are appended
             continue;
         }
-        b.asleep = b.awake ? 0 : b.asleep + 1;
+        b.asleep = (b.awake || b.floats) ? 0 : b.asleep + 1; // a floating body bobs; it never freezes into pixels
         if (b.asleep >= params_.freezeAfter) {
             freeze(b);
             continue;
@@ -746,9 +887,10 @@ void BodySystem::step() {
     }
 
     // 6. back into the grid
-    int hidden = 0, awake = 0, pixels = 0;
+    int hidden = 0, awake = 0, pixels = 0, floating = 0;
     for (RigidBody& b : bodies_) {
         stamp(b);
+        floating += b.submerged > 0;
         hidden += b.hidden;
         awake += b.awake;
         pixels += static_cast<int>(b.pixels.size());
@@ -757,6 +899,7 @@ void BodySystem::step() {
     stats_.awake = awake;
     stats_.pixels = pixels;
     stats_.hidden = hidden;
+    stats_.floating = floating;
     stats_.stepMs = msSince(t0);
 }
 
