@@ -97,8 +97,8 @@ bool App::init() {
         stream_->setElectric(electric_.get());
         // a save of the showcase brings the building back (the generator lays it over the terrain)
         stream_->setOverlayHook([this](const std::string& name) {
-            if (name == showcase_->name()) gen_->setOverlay(showcase_.get());
-            else if (name.empty()) gen_->setOverlay(nullptr);
+            if (name == showcase_->name()) applyOverlay(showcase_.get());
+            else if (name.empty()) applyOverlay(nullptr);
             else return false;
             return true;
         });
@@ -275,6 +275,7 @@ void App::buildHeatPalettes() {
 void App::startWorld() {
     float sx = 0.5f, sy = static_cast<float>(gen_->surfaceY(0));
     if (gen_->overlay() == showcase_.get()) { sx = showcase_->spawnX(); sy = showcase_->spawnY(); }
+    if (gen_->overlay() == showcase_.get() && topDownScene_) { sx = showcase_->topDownX(); sy = showcase_->topDownY(); }
     stream_->start(static_cast<int>(std::floor(sx)), static_cast<int>(sy));
     streaming_ = true;
     spawnPlayer(sx, sy, true);
@@ -343,12 +344,13 @@ bool App::loadWorld() {
 }
 
 void App::loadScene(const std::string& name) {
-    if (name == "world" || name == "showcase") {
+    if (name == "world" || name == "showcase" || name == "topdown") {
         if (particles_) particles_->clear();
         if (bodies_) bodies_->clear();
         if (electric_) electric_->clear();
-        gen_->setOverlay(name == "showcase" ? showcase_.get() : nullptr);
-        showcaseScene_ = name == "showcase";
+        applyOverlay(name == "world" ? nullptr : showcase_.get());
+        showcaseScene_ = name != "world";
+        topDownScene_ = name == "topdown";
         circuitsScene_ = false;
         startWorld();
         if (!opts_.load.empty()) { loadWorld(); opts_.load.clear(); }
@@ -358,7 +360,8 @@ void App::loadScene(const std::string& name) {
         stream_->reset(0, 0); // back to the fixed sandbox world
         streaming_ = false;
     }
-    showcaseScene_ = false;
+    showcaseScene_ = topDownScene_ = false;
+    world_->gravity().clear(); // the fixed scenes are all side view
     if (particles_) particles_->clear();
     if (bodies_) bodies_->clear();
     if (electric_) electric_->clear();
@@ -412,7 +415,7 @@ void App::autoplay() {
     const int f = autoFrame_++;
     PlayerInput& in = playerIn_;
     const float px = player_->x(), py = player_->centreY();
-    in.move = 0.0f;
+    in.move = in.moveY = 0.0f;
     in.jump = in.down = in.use = in.place = false;
     in.aimX = px + 30.0f;
     in.aimY = py;
@@ -421,6 +424,7 @@ void App::autoplay() {
         // gallery and into the demolition hall, then dig on east (streaming as it goes).
         // With --at the player stays put (screenshots of one room with its switches closed).
         if (opts_.at) return;
+        if (topDownScene_) { autoTopDown(in, f); return; }
         in.move = 1.0f;
         in.jump = f > 200 && f % 60 < 10;
         if (f > 700) { in.tool = Tool::Dig; in.use = true; in.aimX = px + 12.0f; in.aimY = py; }
@@ -455,6 +459,7 @@ void App::updatePlayerInput(const bool* keys) {
     if (kb && (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT])) in.move += 1.0f;
     in.jump = kb && (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_SPACE]);
     in.down = kb && (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]);
+    in.moveY = (in.down ? 1.0f : 0.0f) - (in.jump ? 1.0f : 0.0f); // #483: walking north/south in a top-down room
     in.use = painting_;
     in.place = erasing_; // RMB places in play mode
     int wx = 0, wy = 0;
@@ -830,6 +835,7 @@ void App::drawWorld() {
                 }
             }
         }
+    drawFloorTiles();
     applyRelief();
     shadeLiquids();
     drawParticles();
@@ -1557,6 +1563,7 @@ void App::drawWorldUi() {
                            (playerOn_ ? player_->inventory().totalMass(mats_) : 0);
     ImGui::Text("Mass: live %lld + sleeping %lld px, gas %.1f + %.1f", live, stream_->storedMass(),
                 static_cast<double>(gas_->massFixed()) / kGasMassOne, static_cast<double>(stream_->storedGasFixed()) / kGasMassOne);
+    drawTopDownUi();
     if (ImGui::Button("Save (F8)")) saveWorld();
     ImGui::SameLine();
     if (ImGui::Button("Load (F9)")) loadWorld();

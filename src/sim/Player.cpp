@@ -108,7 +108,7 @@ bool Player::blocked(int x, int y) const {
     if (!c) return true; // outside the world is a wall
     const MaterialKind k = mats_[c->material].kind;
     if (k == MaterialKind::Solid) return true;
-    return k == MaterialKind::Powder && !ignorePowder_;
+    return k == MaterialKind::Powder && !ignorePowder_ && !flat_; // #483: from above, powder is pushed aside
 }
 
 bool Player::collides(int ix, int iy) const {
@@ -223,7 +223,7 @@ void Player::moveX(float dx) {
     int cur = static_cast<int>(std::floor(x_));
     const int target = static_cast<int>(std::floor(nx));
     int iy = static_cast<int>(std::floor(y_));
-    const bool canStep = grounded_ || submerged_ > 0.3f || airTicks_ < 3;
+    const bool canStep = !flat_ && (grounded_ || submerged_ > 0.3f || airTicks_ < 3); // #483: no ledges seen from above
     while (cur != target) {
         const int next = cur + dir;
         if (!collides(next, iy)) { cur = next; continue; }
@@ -263,6 +263,43 @@ void Player::moveY(float dy) {
     y_ = ny;
 }
 
+// #483: walking through powder on a floor seen from above pushes it: every
+// grain inside the capsule is moved to the first free pixel ahead of it
+// (along the walk, else straight out of the nearer side), with a little of
+// the player's speed so it slides on. Whole pixels move, so mass is kept.
+void Player::shovePowder() {
+    const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
+    const int H = params_.height;
+    for (int r = 0; r < H; ++r) {
+        const int wy = iy - H + r, hw = halfWidthAt(r);
+        for (int wx = ix - hw; wx <= ix + hw; ++wx) {
+            Cell* c = world_.cell(wx, wy);
+            if (!c || (c->flags & kFlagBody) || mats_[c->material].kind != MaterialKind::Powder) continue;
+            int dx = 0, dy = 0;
+            if (std::abs(vx_) >= std::abs(vy_) && std::abs(vx_) > 0.05f) dx = vx_ > 0 ? 1 : -1;
+            else if (std::abs(vy_) > 0.05f) dy = vy_ > 0 ? 1 : -1;
+            else dx = wx >= ix ? 1 : -1;
+            bool done = false;
+            for (int k = 1; k <= params_.shoveReach + H && !done; ++k) {
+                const int tx = wx + dx * k, ty = wy + dy * k;
+                if (covers(tx, ty)) continue;
+                Cell* t = world_.cell(tx, ty);
+                if (!t) break;
+                const MaterialKind tk = mats_[t->material].kind;
+                if (tk == MaterialKind::Solid || (t->flags & kFlagBody)) break;
+                if (tk == MaterialKind::Powder || tk == MaterialKind::Liquid) continue; // pushed through the pile
+                if (k > params_.shoveReach + H) break;
+                Cell grain = *c, air = *t;
+                grain.vx = static_cast<std::int16_t>(std::clamp(vx_ * 0.5f, -1.5f, 1.5f) * kVelOne);
+                grain.vy = static_cast<std::int16_t>(std::clamp(vy_ * 0.5f, -1.5f, 1.5f) * kVelOne);
+                world_.setCell(tx, ty, grain);
+                world_.setCell(wx, wy, air);
+                done = true;
+            }
+        }
+    }
+}
+
 void Player::step(const PlayerInput& in) {
     ++tick_;
     stats_.dug = stats_.placed = stats_.jetMass = 0;
@@ -270,6 +307,9 @@ void Player::step(const PlayerInput& in) {
     stats_.blasted = false;
     const PlayerParams& P = params_;
     ++sinceHurt_;
+
+    // #483: seen from above (the capsule's centre in a top-down region)
+    flat_ = world_.gravity().flat(static_cast<int>(std::floor(x_)), static_cast<int>(std::floor(centreY())));
 
     unstick();
     sense();
@@ -292,14 +332,14 @@ void Player::step(const PlayerInput& in) {
     }
 
     // ---- forces (px/tick^2) ----
-    float ax = 0.0f, ay = P.gravity;
-    if (submerged_ > 0.0f) ay -= P.gravity * submerged_ * liquidDensity_ / P.density; // buoyancy
+    float ax = 0.0f, ay = flat_ ? 0.0f : P.gravity;
+    if (submerged_ > 0.0f && !flat_) ay -= P.gravity * submerged_ * liquidDensity_ / P.density; // buoyancy
 
     // the gas grid: wind drag and pressure, sampled over the cells the capsule covers
     stats_.windX = stats_.windY = 0.0f;
     // the cloak: holding jump while falling in the open spreads it, so the air holds the player up
     // much more (vertically); a gentle updraft then carries it
-    gliding_ = in.jump && !grounded_ && !rope_ && submerged_ < 0.2f && (gliding_ || vy_ > -0.5f); // opens at the top of a jump, stays open
+    gliding_ = !flat_ && in.jump && !grounded_ && !rope_ && submerged_ < 0.2f && (gliding_ || vy_ > -0.5f); // opens at the top of a jump, stays open
     const float dragY = gliding_ ? P.glideDrag : P.gasDrag;
     bool windSampled = false;
     if (gas_ && gas_->params().enabled && gas_->fields().w > 0) {
@@ -344,17 +384,28 @@ void Player::step(const PlayerInput& in) {
         if (okT && okB) ay -= P.gasPush * (pb - pt) / static_cast<float>((j1 - j0 + 2) * kGasCell);
     }
 
-    if (!windSampled) ay -= dragY * vy_ * (1.0f - submerged_); // still air (no grid)
+    if (!windSampled && !flat_) ay -= dragY * vy_ * (1.0f - submerged_); // still air (no grid)
 
     // ---- input ----
+    const bool jumpEdge = in.jump && !wasJump_;
+    wasJump_ = in.jump;
+    if (flat_) {
+        // #483: walking on a floor seen from above, in 8 directions (diagonals as fast as
+        // straight), wading slower through liquid; no jumping, swimming or stepping up
+        float mx = std::clamp(in.move, -1.0f, 1.0f), my = std::clamp(in.moveY, -1.0f, 1.0f);
+        const float len = std::sqrt(mx * mx + my * my);
+        if (len > 1.0f) { mx /= len; my /= len; }
+        if (mx != 0.0f) facing_ = mx > 0 ? 1 : -1;
+        const float speed = P.walkSpeed * (submerged_ > 0.3f ? 0.6f : 1.0f);
+        vx_ += std::clamp(mx * speed - vx_, -P.groundAccel, P.groundAccel);
+        vy_ += std::clamp(my * speed - vy_, -P.groundAccel, P.groundAccel);
+    } else {
     if (in.move != 0.0f) facing_ = in.move > 0 ? 1 : -1;
     {
         const float target = std::clamp(in.move, -1.0f, 1.0f) * P.walkSpeed * (submerged_ > 0.5f ? 0.6f : 1.0f);
         const float accel = grounded_ ? P.groundAccel : (submerged_ > 0.3f ? 0.12f : P.airAccel);
         if (in.move != 0.0f || grounded_) vx_ += std::clamp(target - vx_, -accel, accel);
     }
-    const bool jumpEdge = in.jump && !wasJump_;
-    wasJump_ = in.jump;
     if (jumpEdge && !rope_ && submerged_ < 0.6f && (grounded_ || airTicks_ <= P.coyoteTicks)) {
         vy_ = -P.jumpSpeed;
         if (groundBody_ && bodies_) bodies_->applyImpulse(groundBody_, x_, y_, 0.0f, massUnits() * P.jumpSpeed);
@@ -364,6 +415,7 @@ void Player::step(const PlayerInput& in) {
     if (submerged_ > 0.2f) {
         if (in.jump) ay -= P.swimAccel;
         if (in.down) ay += P.swimAccel * 0.6f;
+    }
     }
     vx_ += ax;
     vy_ += ay;
@@ -391,11 +443,14 @@ void Player::step(const PlayerInput& in) {
     const bool wasGrounded = grounded_;
     moveX(vx_ + carry);
     moveY(vy_);
+    if (flat_) shovePowder();
 
     const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
-    grounded_ = collides(ix, iy + 1);
+    grounded_ = flat_ || collides(ix, iy + 1); // #483: on a floor seen from above the player always stands
     groundBody_ = 0;
-    if (grounded_) {
+    if (flat_) {
+        airTicks_ = 0;
+    } else if (grounded_) {
         if (!wasGrounded && landing > P.landSpeed) hurt((landing - P.landSpeed) * P.landDamage);
         airTicks_ = 0;
         if (bodies_)

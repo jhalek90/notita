@@ -3,6 +3,7 @@
 // Phase 1 creates a fixed rectangle of chunks; streaming (phase 6) only has
 // to call createChunk / removeChunk. Unloaded space acts as a solid wall.
 #include "Chunk.h"
+#include "Gravity.h"
 #include "Material.h"
 
 #include <memory>
@@ -74,10 +75,15 @@ public:
     long long totalMass(const MaterialRegistry& mats) const;   // sum of Material::mass over all cells
     double thermalEnergy(const MaterialRegistry& mats) const;  // sum of heat_capacity * temperature
 
+    // #483: the top-down regions (gravity into the screen). Part of the scene: clear() keeps them.
+    GravityMap& gravity() { return gravity_; }
+    const GravityMap& gravity() const { return gravity_; }
+
 private:
     void rebuildList();
     std::unordered_map<std::uint64_t, std::unique_ptr<Chunk>> map_;
     std::vector<Chunk*> list_;
+    GravityMap gravity_;
     int minCx_ = 0, minCy_ = 0, maxCx_ = -1, maxCy_ = -1;
 };
 

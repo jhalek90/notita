@@ -65,6 +65,8 @@ struct SimParams {
     bool  gridFlames = true;
     float flameFuel = 1.0f;      // scales that fuel
     float emberChance = 0.05f;   // share of the old flame throws that still happen, as embers
+    // #483: in top-down regions (World::gravity()) liquids hold together as puddles:
+    int   flatRuns = 4;          // sideways (equal-energy) moves a puddle-edge pixel may make before it rests
 };
 
 // Per-material values the tick needs, precomputed from the registry.

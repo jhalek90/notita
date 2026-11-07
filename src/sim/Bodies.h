@@ -102,6 +102,10 @@ struct BodyParams {
     // times their area times gravity, at their centroid, plus drag.
     bool  buoyancy = true;
     float liquidDrag = 15.0f;    // per second, on the submerged share of the body's velocity (about half the critical damping of a 4 px raft)
+    // #483: a body whose centre is in a top-down region feels no gravity (it lies on
+    // the floor): it slides to a stop with Coulomb friction and its spin is damped
+    float floorFriction = 0.05f; // px/tick^2 of deceleration (about a quarter of g)
+    float floorSpin = 0.08f;     // fraction of the spin lost per tick
 };
 
 struct BodyStats {
@@ -188,6 +192,7 @@ private:
     void buildTerrain();
     void applyGas(RigidBody& b);
     void applyLiquid(RigidBody& b);
+    void applyFloor(RigidBody& b);   // #483: friction on a top-down floor
     void pointVelocity(const RigidBody& b, float wx, float wy, float& vx, float& vy) const;
     void eject(const Cell& cell, float x, float y, float vx, float vy);
     Rng rng(std::uint64_t salt) const;

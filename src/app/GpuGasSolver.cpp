@@ -11,11 +11,13 @@ namespace {
 struct Uniforms {
     int w, h, ns, iters;
     float buoyHeat, buoyDens, vort, damping;
-    float maxSpeed, diffusion, airCap, pad1;
+    float maxSpeed, diffusion, airCap;
+    int flatCount;
     float light[kMaxGasSpecies];
     float cap[kMaxGasSpecies];
+    int flat[GasSolveParams::kMaxFlat][4];
 };
-static_assert(sizeof(Uniforms) == 112, "keep Uniforms in step with gas.hlsl");
+static_assert(sizeof(Uniforms) == 176, "keep Uniforms in step with gas.hlsl");
 
 struct KernelInfo {
     const char* file;
@@ -166,6 +168,9 @@ void GpuGasSolver::solve(GasFields& f, const GasSolveParams& sp) {
     un.buoyHeat = sp.buoyancyHeat; un.buoyDens = sp.buoyancyDensity; un.vort = sp.vorticity; un.damping = sp.damping;
     un.maxSpeed = sp.maxSpeed; un.diffusion = sp.diffusion; un.airCap = sp.airCap;
     for (int k = 0; k < kMaxGasSpecies; ++k) { un.light[k] = sp.light[k]; un.cap[k] = sp.cap[k]; }
+    un.flatCount = sp.flatCount;
+    for (int k = 0; k < GasSolveParams::kMaxFlat; ++k)
+        for (int q = 0; q < 4; ++q) un.flat[k][q] = sp.flat[k][q];
     uniforms_ = &un;
 
     const int W = f.w, H = f.h;

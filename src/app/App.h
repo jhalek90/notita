@@ -99,6 +99,13 @@ private:
     void autoCircuits();   // --scene circuits --autoplay: flips the switches, calls lightning (smoke runs)
     bool circuitsScene_ = false;
     bool showcaseScene_ = false; // the streamed world with the showcase building laid over it
+    // #483: the top-down room (AppTopDown.cpp)
+    bool topDownScene_ = false;  // --scene topdown: the showcase, starting in the top-down room
+    bool topDownOn_ = true;      // the overlay's flat regions are in World::gravity()
+    void applyOverlay(const WorldOverlay* overlay); // the generator's overlay + its flat regions
+    void drawFloorTiles();       // in drawWorld: a flat region's empty pixels are its floor
+    void drawTopDownUi();        // in the World panel
+    void autoTopDown(PlayerInput& in, int frame);
     int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();

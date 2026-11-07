@@ -8,9 +8,10 @@ cbuffer Params : register(b0, space2)
 {
     int W; int H; int NS; int Iters;
     float BuoyHeat; float BuoyDens; float Vort; float Damping;
-    float MaxSpeed; float Diffusion; float AirCap; float Pad1;
+    float MaxSpeed; float Diffusion; float AirCap; int NFlat;
     float4 Light[2];
     float4 Cap[2];
+    int4 Flat[4]; // #483: top-down regions in grid cells (i0, j0, i1, j1): no buoyancy there
 };
 
 static const float CellPx = 16.0;
@@ -74,6 +75,8 @@ float capacity(int c)
 float buoyancy(int i, int j)
 {
     int c = j * W + i;
+    for (int f = 0; f < NFlat; ++f)
+        if (i >= Flat[f].x && i <= Flat[f].z && j >= Flat[f].y && j <= Flat[f].w) return 0.0;
     float b = BuoyHeat * (Heat[c] / capacity(c));
     float perPx = 1.0 / (max(Open[c], 1.0 / CellPx) * CellPx * MassOne);
     for (int k = 0; k < NS; ++k) b += BuoyDens * lightOf(k) * (float)Mass[k * W * H + c] * perPx;

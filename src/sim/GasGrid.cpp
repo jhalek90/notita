@@ -910,12 +910,13 @@ void GasGrid::explode(int x, int y, int radius, float power) {
             if (c && looseKind(mats_[c->material].kind)) loose.push_back({qx, qy, d});
         }
     std::stable_sort(loose.begin(), loose.end(), [](const Px& a, const Px& b) { return a.d > b.d; });
+    const float lift = world_.gravity().flat(x, y) ? 0.0f : 0.5f; // #483: seen from above, nothing goes up
     if (particles_) {
         // phase 4: the debris flies as particles and lands wherever it stops
         Rng rng = cellRng(x * 7919 + y, 13);
         for (const Px& p : loose) {
             const float d = std::max(p.d, 0.5f);
-            float nx = static_cast<float>(p.x - x) / d, ny = static_cast<float>(p.y - y) / d - 0.5f;
+            float nx = static_cast<float>(p.x - x) / d, ny = static_cast<float>(p.y - y) / d - lift;
             const float len = std::sqrt(nx * nx + ny * ny);
             nx /= len;
             ny /= len;
@@ -928,7 +929,7 @@ void GasGrid::explode(int x, int y, int radius, float power) {
     for (const Px& p : loose) {
         const float d = std::max(p.d, 0.5f);
         // outwards with a lift, so a crater opens and the debris flies up
-        float nx = static_cast<float>(p.x - x) / d, ny = static_cast<float>(p.y - y) / d - 0.5f;
+        float nx = static_cast<float>(p.x - x) / d, ny = static_cast<float>(p.y - y) / d - lift;
         const float len = std::sqrt(nx * nx + ny * ny);
         nx /= len;
         ny /= len;
@@ -985,6 +986,17 @@ void GasGrid::step() {
             hv = nv;
         }
         lostHeat_ += lost;
+    }
+    // #483: the top-down regions, in this window's grid cells (a cell counts when its centre is in one)
+    sp_.flatCount = 0;
+    for (const FlatRegion& r : world_.gravity().regions()) {
+        if (sp_.flatCount >= GasSolveParams::kMaxFlat) break;
+        auto fdiv = [](int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); };
+        const int i0 = std::max(0, fdiv(r.x0 - ox_ + 1, kGasCell)), j0 = std::max(0, fdiv(r.y0 - oy_ + 1, kGasCell));
+        const int i1 = std::min(f_.w - 1, fdiv(r.x1 - ox_ - 2, kGasCell)), j1 = std::min(f_.h - 1, fdiv(r.y1 - oy_ - 2, kGasCell));
+        if (i0 > i1 || j0 > j1) continue;
+        int* q = sp_.flat[sp_.flatCount++];
+        q[0] = i0; q[1] = j0; q[2] = i1; q[3] = j1;
     }
     const auto t1 = std::chrono::steady_clock::now();
     solver_->solve(f_, sp_);

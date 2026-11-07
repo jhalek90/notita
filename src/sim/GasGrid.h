@@ -57,6 +57,15 @@ struct GasSolveParams {
     float airCap = 0.25f;            // heat capacity of one air pixel
     float light[kMaxGasSpecies]{};   // (air density - gas density) / air density, clamped to -4..1
     float cap[kMaxGasSpecies]{};     // heat capacity per kGasMassOne
+    // #483: top-down regions in grid cells (i0, j0, i1, j1 inclusive): no buoyancy there
+    static constexpr int kMaxFlat = 4;
+    int   flatCount = 0;
+    int   flat[kMaxFlat][4]{};
+    bool  flatCell(int i, int j) const {
+        for (int k = 0; k < flatCount; ++k)
+            if (i >= flat[k][0] && i <= flat[k][2] && j >= flat[k][1] && j <= flat[k][3]) return true;
+        return false;
+    }
 };
 
 // The grid state. Cell arrays are w*h, row-major; u lives on vertical faces

@@ -112,10 +112,14 @@ struct PlayerParams {
     // electricity: current through the liquid the player is in hurts
     float shockCurrent = 0.01f;   // current per pixel that is felt
     float shockDamage = 3.0f;     // hp per tick per unit of current (the strongest pixel, capped at 3)
+    // #483: in a top-down region (World::gravity()) the player walks in 8 directions
+    // with no gravity and no jumping, and shoves powder out of its way
+    int   shoveReach = 10;        // px: how far a shoved grain may be pushed to find room
 };
 
 struct PlayerInput {
     float move = 0.0f;            // -1 left .. 1 right
+    float moveY = 0.0f;           // #483: -1 up .. 1 down, used in top-down regions
     bool  jump = false;           // held: jump, swim up, reel the rope in
     bool  down = false;           // held: swim down, let the rope out
     bool  use = false;            // tool held
@@ -179,6 +183,7 @@ public:
     float health() const { return health_; }
     bool  grounded() const { return grounded_; }
     bool  gliding() const { return gliding_; }
+    bool  topDown() const { return flat_; } // #483: in a top-down region this tick
     int   facing() const { return facing_; }
     int   groundBody() const { return groundBody_; }
     bool  covers(int wx, int wy) const; // the pixel is inside the capsule
@@ -207,6 +212,7 @@ private:
     void sense();
     void moveX(float dx);
     void moveY(float dy);
+    void shovePowder();               // #483: top-down, grains in the capsule are pushed out ahead of it
     void hurt(float hp);
     void useTools(const PlayerInput& in);
     void dig(const PlayerInput& in, float tx, float ty);
@@ -242,6 +248,7 @@ private:
     bool  ignorePowder_ = false;
     bool  wasJump_ = false;
     bool  gliding_ = false;
+    bool  flat_ = false;              // #483: in a top-down region
     // environment, sensed each tick
     float submerged_ = 0, liquidDensity_ = 0, liquidViscosity_ = 0;
     // rope

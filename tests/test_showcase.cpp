@@ -60,6 +60,7 @@ struct ShowRig {
         gen = std::make_unique<WorldGen>(mats, seed);
         if (overlay) gen->setOverlay(show.get());
         world = std::make_unique<World>(0, 0, sp.chunksW, sp.chunksH);
+        if (overlay) world->gravity().set(show->flatRegions()); // #483: the top-down room
         pool = std::make_unique<ThreadPool>(4);
         sim = std::make_unique<Simulator>(*world, mats, pool.get(), seed);
         sim->params().reactions = false;
@@ -86,8 +87,8 @@ struct ShowRig {
     }
     void hookOverlay() {
         stream->setOverlayHook([this](const std::string& name) {
-            if (name == show->name()) gen->setOverlay(show.get());
-            else if (name.empty()) gen->setOverlay(nullptr);
+            if (name == show->name()) { gen->setOverlay(show.get()); world->gravity().set(show->flatRegions()); }
+            else if (name.empty()) { gen->setOverlay(nullptr); world->gravity().clear(); }
             else return false;
             return true;
         });
