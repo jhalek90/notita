@@ -239,19 +239,19 @@ void App::setNewLookAndMotion(bool on) {
     smoothPowder_ = calmLiquid_ = on;
 }
 
-void App::drawLiquidUi() {
-    ImGui::Begin("Look & motion", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    bool both = newLook_ && smoothPowder_ && calmLiquid_;
-    if (ImGui::Checkbox("New look + motion (F10 flips old/new)", &both)) setNewLookAndMotion(both);
-    ImGui::Checkbox("Smooth liquid surfaces", &newLook_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Wobble", &liquidWobble_);
-    if (!gpuLiquid_) ImGui::TextDisabled("GPU surface pass unavailable: %s", gpuLiquidError_.c_str());
-    ImGui::Checkbox("Smooth powder motion", &smoothPowder_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Calm liquids", &calmLiquid_);
-    ImGui::TextDisabled("Off = the phase 1 rules (sand steps, surface flicker)");
-    ImGui::End();
+void App::registerLiquidUi() { // #484: View > Liquids (the look), Sim > Powder & liquid motion; F10 flips both (View > Old / new)
+    menu_.add("View", "Liquids", 40, [this] {
+        ImGui::Checkbox("Smooth liquid surfaces", &newLook_);
+        ImGui::SameLine();
+        ImGui::Checkbox("Wobble", &liquidWobble_);
+        if (!gpuLiquid_) ImGui::TextDisabled("GPU surface pass unavailable: %s", gpuLiquidError_.c_str());
+    });
+    menu_.add("Sim", "Powder & liquid motion", 70, [this] {
+        ImGui::Checkbox("Smooth powder motion", &smoothPowder_);
+        ImGui::SameLine();
+        ImGui::Checkbox("Calm liquids", &calmLiquid_);
+        ImGui::TextDisabled("Off = the phase 1 rules (sand steps, surface flicker); F10 flips look + motion");
+    });
 }
 
 bool App::writeBmp(const std::string& path, const std::vector<std::uint32_t>& px, int w, int h) {

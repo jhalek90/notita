@@ -243,12 +243,10 @@ bool App::flameScreenshot(const std::string& path) {
     return writeBmp(path, px, gpuFlame_->outW(), gpuFlame_->outH());
 }
 
-void App::drawFlameUi() {
-    ImGui::Begin("Flames", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    bool on = newFlames_;
-    if (ImGui::Checkbox("Flames on the gas grid (F11 flips old/new)", &on)) setNewFlames(on);
-    if (!gpuFlame_) ImGui::TextDisabled("GPU flame pass unavailable: %s", gpuFlameError_.c_str());
-    if (gas_) {
+void App::registerFlameUi() { // #484: Sim > Flames (the burning), View > Flames (the look); F11 is in View > Old / new
+    menu_.add("Sim", "Flames", 30, [this] {
+        bool on = newFlames_;
+        if (ImGui::Checkbox("Flames on the gas grid (F11 flips old/new)", &on)) setNewFlames(on);
         const GasGridStats& st = gas_->stats();
         ImGui::Text("burning cells %d, fuel %.0f, burnt %.0f /tick, max %.0f C", st.flameCells, st.fuel, st.fuelBurned,
                     static_cast<double>(st.maxTemp));
@@ -258,15 +256,19 @@ void App::drawFlameUi() {
         ImGui::SliderFloat("Burn rate", &gp.fuelBurnRate, 0.02f, 1.0f, "%.2f");
         ImGui::SliderFloat("Fuel ignites at", &gp.fuelIgnite, 100.0f, 900.0f, "%.0f C");
         ImGui::SliderFloat("Soot yield", &gp.sootYield, 0.0f, 0.05f, "%.3f");
+        ImGui::PopItemWidth();
+        ImGui::TextDisabled("Off = flame pixels (the phase 2 fire)");
+    });
+    menu_.add("View", "Flames", 50, [this] {
+        if (!gpuFlame_) ImGui::TextDisabled("GPU flame pass unavailable: %s", gpuFlameError_.c_str());
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
         ImGui::SliderFloat("Brightness", &flameLook_.gain, 0.0f, 3.0f, "%.2f");
         ImGui::SliderFloat("Glows from", &flameLook_.minTemp, 200.0f, 900.0f, "%.0f C");
         ImGui::SliderFloat("Soot darkening", &flameLook_.smoke, 0.0f, 3.0f, "%.2f");
         ImGui::SliderFloat("Flicker", &flameLook_.flicker, 0.0f, 2.0f, "%.2f");
         ImGui::SliderFloat("Light", &flameLightGain_, 0.0f, 2.0f, "%.2f");
         ImGui::PopItemWidth();
-    }
-    ImGui::TextDisabled("Off = flame pixels (the phase 2 fire)");
-    ImGui::End();
+    });
 }
 
 } // namespace notita
