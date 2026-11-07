@@ -83,15 +83,14 @@ void App::applyRelief() {
         }
 }
 
-void App::drawTextureUi() {
-    ImGui::Begin("Textures", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::Checkbox("Surface relief + wet look (F12)", &relief_);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
-    ImGui::SliderFloat("Relief", &reliefStrength_, 0.0f, 2.0f, "%.2f");
-    ImGui::SliderFloat("Wet darkening", &wetness_, 0.0f, 2.0f, "%.2f");
-    ImGui::PopItemWidth();
-    ImGui::TextDisabled("Pixel textures come from palette/texture keys in data/materials.txt");
-    ImGui::End();
+void App::registerTextureUi() { // #484: View > Textures; F12 is in View > Old / new
+    menu_.add("View", "Textures", 60, [this] {
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
+        ImGui::SliderFloat("Relief", &reliefStrength_, 0.0f, 2.0f, "%.2f");
+        ImGui::SliderFloat("Wet darkening", &wetness_, 0.0f, 2.0f, "%.2f");
+        ImGui::PopItemWidth();
+        ImGui::TextDisabled("Pixel textures come from palette/texture keys in data/materials.txt");
+    });
 }
 
 } // namespace notita

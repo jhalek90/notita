@@ -98,6 +98,7 @@ if(NOTITA_BUILD_APP)
     # #480: the flame pass (GpuFlame + its App side)
     target_sources(notita PRIVATE src/app/GpuFlame.cpp src/app/AppFlame.cpp)
     target_sources(notita PRIVATE src/app/AppTexture.cpp)
+    target_sources(notita PRIVATE src/app/UiMenu.cpp src/app/AppUi.cpp) # #484: the one tabbed menu + HUD
     # #483: the top-down room's app side (floor tiles, panel, smoke run)
     target_sources(notita PRIVATE src/app/AppTopDown.cpp)
     target_link_libraries(notita PRIVATE notita_light)

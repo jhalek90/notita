@@ -6,6 +6,7 @@
 #include "GpuLight.h"
 #include "GpuLiquid.h"
 #include "Renderer.h"
+#include "UiMenu.h"
 #include "light/Lighting.h"
 #include "sim/Bodies.h"
 #include "sim/Brush.h"
@@ -52,6 +53,9 @@ struct AppOptions {
     bool lockstep = false;      // exactly one sim tick per frame (comparable screenshots)
     bool oldFlames = false;     // #480: start with flames as pixels (F11 flips)
     bool noRelief = false;      // #481: start without the surface relief / wet look (F12 flips)
+    std::string tab;            // #484: open the menu on this tab (screenshots of a tab)
+    bool noHud = false;         // #484: start with the HUD off
+    bool noMenu = false;        // #484: start with the menu closed
     bool at = false;            // --at x,y: put the player (feet) there at start (screenshots of a room)
     float atX = 0, atY = 0;
 };
@@ -75,15 +79,12 @@ private:
     void stepSim(double frameDt);
     void tickSim();       // one sim tick, then bodies, particles and the gas grid step
     void drawParticles();
-    void drawPhase4Ui();
     void drawGas();       // gas over the pixels, or the velocity / pressure view
-    void drawGasUi();
     // phase 5: the player
     void spawnPlayer(float x, float y, bool kit);
     void removePlayer();
     void updatePlayerInput(const bool* keys);
     void drawPlayer();
-    void drawPlayerUi();
     void blast(int x, int y);
     void loadScene(const std::string& name);
     // phase 6: the streamed procedural world, save/load
@@ -91,8 +92,6 @@ private:
     void followWorld();
     bool saveWorld();
     bool loadWorld();
-    void drawWorldUi();
-    void drawElectricUi();
     void drawElectric();   // the current / potential overlay (M)
     void toggleSwitchAt(int x, int y);
     void autoShowcase();   // --scene showcase --autoplay: closes the switches, logs stats (smoke runs)
@@ -104,11 +103,30 @@ private:
     bool topDownOn_ = true;      // the overlay's flat regions are in World::gravity()
     void applyOverlay(const WorldOverlay* overlay); // the generator's overlay + its flat regions
     void drawFloorTiles();       // in drawWorld: a flat region's empty pixels are its floor
-    void drawTopDownUi();        // in the World panel
+    void registerTopDownUi();    // the menu's World > Top-down room section
     void autoTopDown(PlayerInput& in, int frame);
     int  circuitTick_ = 0;
     void drawWorld();
     void drawUi();
+    // ---- #484: the one menu (UiMenu) and the HUD ----
+    // registerUi() calls one register function per system; each adds its tab or its
+    // sections with menu_.add(tab, section, order, draw). New features add their own.
+    void registerUi();
+    void registerSandboxUi();  // Materials, World (time, scenes), Sim (heat), View (overlays, old/new)
+    void registerGasUi();
+    void registerBodiesUi();   // Sim: particles, bodies
+    void registerPlayerUi();
+    void registerWorldUi();    // World: the streamed world, save / load
+    void registerElectricUi();
+    void registerStatsUi();    // Performance, Debug
+    void registerLightUi();    // AppLight.cpp
+    void registerLiquidUi();   // AppLiquid.cpp
+    void registerFlameUi();    // AppFlame.cpp
+    void registerTextureUi();  // AppTexture.cpp
+    void drawHud();            // the small always-on HUD: material, brush, fps / tick
+    void setSlowMo(bool on);
+    void clearWorld();
+    UiMenu menu_;
     void drawTitleCard(); // the game's name over the first seconds, fading out (panels hidden or not)
     void drawOverlays(const Viewport& vp);
     bool screenToWorld(float sx, float sy, int& wx, int& wy) const;
@@ -183,7 +201,7 @@ private:
     Viewport viewport_;
 
     // UI / debug
-    bool showUi_ = true, showChunks_ = false, showDirty_ = false;
+    bool showChunks_ = false, showDirty_ = false;
     bool showTemp_ = false, glow_ = true; // temperature view (F5), hot pixels glow
     std::array<std::uint32_t, 1024> tempPalette_{}; // -128 .. 1918 C in 2 C steps
     std::array<std::uint32_t, 256> glowColor_{};    // 400 .. 1675 C in 5 C steps, alpha in the top byte
@@ -193,7 +211,6 @@ private:
     void prepareLight();      // after drawWorld: fill the light inputs; the CPU path lights the pixels here
     bool recordLight(SDL_GPUCommandBuffer* cmd); // GPU path: writes the view texture, true when it did
     void lightScreenshot();   // GPU path: read the lit view back into the pixels before a screenshot
-    void drawLightUi();
     std::unique_ptr<GpuLight> gpuLight_; // null when the GPU pass is unavailable
     std::string gpuLightError_;
     CpuLight cpuLight_;
@@ -218,7 +235,6 @@ private:
     bool recordLiquid(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit, bool present = true); // true when it drew the frame
     bool liquidScreenshot(const std::string& path);
     void setNewLookAndMotion(bool on);
-    void drawLiquidUi();
     static bool writeBmp(const std::string& path, const std::vector<std::uint32_t>& px, int w, int h);
     std::unique_ptr<GpuLiquid> gpuLiquid_; // null when the GPU pass is unavailable
     std::string gpuLiquidError_;
@@ -233,7 +249,6 @@ private:
     // ---- #481: surface relief and wet look on textured materials (AppTexture.cpp) ----
     void rebuildSurfaceKinds(); // per material: open / dense (solid, powder) / liquid
     void applyRelief();         // in drawWorld, after the cells are copied
-    void drawTextureUi();
     bool relief_ = true;
     float reliefStrength_ = 1.0f, wetness_ = 1.0f;
     std::vector<std::uint8_t> matSurface_; // per material
@@ -249,7 +264,6 @@ private:
     void addFlameLight();     // in prepareLight: the flames' emission
     bool recordFlame(SDL_GPUCommandBuffer* cmd, SDL_GPUTexture* swap, bool lit, bool liquid); // true when it drew the frame
     bool flameScreenshot(const std::string& path);
-    void drawFlameUi();
     std::unique_ptr<GpuFlame> gpuFlame_; // null when the GPU pass is unavailable
     std::string gpuFlameError_;
     bool newFlames_ = true, flameAny_ = false, flameDrawn_ = false;

@@ -174,7 +174,14 @@ bool App::init() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.IniFilename = nullptr; // no imgui.ini next to the exe
+    // #484: the menu's place, size and open tab live in imgui.ini (working dir, like the save);
+    // smoke runs (--frames) neither read nor write it, so their screenshots don't depend on it
+    io.IniFilename = opts_.frames > 0 ? nullptr : "imgui.ini";
+    if (!opts_.tab.empty()) menu_.select(opts_.tab);
+    menu_.hud = !opts_.noHud;
+    menu_.open = !opts_.noMenu;
+    menu_.installSettings();
+    registerUi();
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 4.0f;
@@ -562,11 +569,7 @@ void App::handleEvent(const SDL_Event& e) {
             break;
         }
         if (k == SDLK_U) { loadScene("circuits"); break; }
-        if (k == SDLK_T) {
-            slowMo_ = !slowMo_;
-            if (slowMo_) { savedSpeed_ = speed_; speed_ = 0.25f; } else speed_ = savedSpeed_;
-            break;
-        }
+        if (k == SDLK_T) { setSlowMo(!slowMo_); break; }
         if (playerOn_) {
             // the player has WASD / Space; pause moves to P, tools to 1-6
             if (k == SDLK_SPACE || k == SDLK_W || k == SDLK_A || k == SDLK_S || k == SDLK_D) break;
@@ -576,7 +579,8 @@ void App::handleEvent(const SDL_Event& e) {
         }
         if (k == SDLK_SPACE) paused_ = !paused_;
         else if (k == SDLK_PERIOD || k == SDLK_N) { paused_ = true; ++stepRequests_; }
-        else if (k == SDLK_TAB || k == SDLK_F1) showUi_ = !showUi_;
+        else if ((k == SDLK_TAB || k == SDLK_F1) && (SDL_GetModState() & SDL_KMOD_SHIFT)) menu_.hud = !menu_.hud; // #484
+        else if (k == SDLK_TAB || k == SDLK_F1) menu_.open = !menu_.open;
         else if (k == SDLK_F3) showChunks_ = !showChunks_;
         else if (k == SDLK_F4 && (SDL_GetModState() & SDL_KMOD_SHIFT)) showDirty_ = !showDirty_;
         else if (k == SDLK_F4) lightOn_ = !lightOn_;
@@ -604,7 +608,7 @@ void App::handleEvent(const SDL_Event& e) {
         else if (k == SDLK_RIGHTBRACKET) brush_.radius = std::min(64, brush_.radius + 1);
         else if (k == SDLK_R) loadScene("demo");
         else if (k == SDLK_B) loadScene("churn");
-        else if (k == SDLK_C) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); electric_->clear(); }
+        else if (k == SDLK_C) clearWorld();
         else if (k == SDLK_ESCAPE) running_ = false;
         else if (k >= SDLK_1 && k <= SDLK_9) {
             const auto id = static_cast<std::size_t>(k - SDLK_1 + 1);
@@ -938,33 +942,6 @@ void App::drawElectric() {
         }
 }
 
-void App::drawElectricUi() {
-    ImGui::Begin("Electricity", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    const ElectricStats& es = electric_->stats();
-    ElectricParams& ep = electric_->params();
-    ImGui::Checkbox("On", &ep.enabled);
-    ImGui::SameLine();
-    ImGui::Checkbox("Overlay (M)", &showElectric_);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
-    ImGui::Combo("##ev", &electricView_, "Current\0Potential\0");
-    ImGui::Text("%d live px in %d circuits (%d solved, %d settling), %d CG iterations", es.nodes, es.components, es.solved,
-                es.unsettled, es.iterations);
-    ImGui::Text("power %.1f, heat %.1f, %d lamp px lit, max %.0f V, %.2f ms", es.power, es.heat, es.lit,
-                static_cast<double>(electric_->maxPotential()), es.ms);
-    ImGui::Text("sparks %d, splits %d (total %lld)", es.sparks, es.splits, es.splitsTotal);
-    if (playerOn_ && player_->stats().shock > 0.0f) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "shock! %.2f", player_->stats().shock);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
-    ImGui::SliderFloat("Heat gain", &ep.heatGain, 0.0f, 2.0f, "%.2f");
-    ImGui::SliderInt("CG iterations / tick", &ep.maxIterations, 1, 512);
-    ImGui::SliderFloat("Spark power", &ep.sparkPower, 0.2f, 20.0f, "%.1f");
-    ImGui::SliderFloat("Electrolysis rate", &ep.splitRate, 0.0f, 0.002f, "%.5f");
-    ImGui::PopItemWidth();
-    ImGui::TextDisabled("E flip switch (cursor / in reach), Y lightning at the cursor's column");
-    ImGui::TextDisabled("U circuits scene: volt cell -> wire -> lamp / heater -> ground rod");
-    ImGui::End();
-}
-
 void App::drawGas() {
     if (!showGas_ || !gas_) return;
     const GasFields& f = gas_->fields();
@@ -1063,313 +1040,6 @@ void App::drawOverlays(const Viewport& vp) {
         else dl->AddRect(toScreen(wx - r + 0.5f, wy - r + 0.5f), toScreen(wx + r + 0.5f, wy + r + 0.5f), col);
     }
     dl->PopClipRect();
-}
-
-void App::drawUi() {
-    if (!showUi_) return;
-    const SimStats& st = sim_->stats();
-
-    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    // "###Sandbox" keeps the window's ImGui id (and its saved place in imgui.ini)
-    char sandboxTitle[64];
-    std::snprintf(sandboxTitle, sizeof sandboxTitle, "%s: sandbox###Sandbox", brand::kName);
-    ImGui::Begin(sandboxTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 11.0f);
-    ImGui::SeparatorText("Material");
-    ImGui::BeginChild("##materials", ImVec2(ImGui::GetFontSize() * 15.0f, ImGui::GetFontSize() * 14.0f));
-    for (std::size_t i = 1; i < mats_.size(); ++i) {
-        const Material& m = mats_[static_cast<MaterialId>(i)];
-        ImGui::PushID(static_cast<int>(i));
-        const ImU32 c = toImColor(displayPalette_[i][160]);
-        ImGui::ColorButton("##c", ImGui::ColorConvertU32ToFloat4(c), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
-        ImGui::SameLine();
-        char label[96];
-        std::snprintf(label, sizeof label, i <= 9 ? "%s  [%zu]" : "%s", m.label.c_str(), i);
-        if (ImGui::Selectable(label, brush_.material == m.id)) brush_.material = m.id;
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::Text("%s, density %.1f%s", kindName(m.kind), m.density,
-                        m.kind == MaterialKind::Liquid ? (m.viscosity > 0.5f ? ", viscous" : "") : "");
-            ImGui::Text("conductivity %.2f, heat capacity %.2f, placed at %.0f C", m.conductivity, m.heatCapacity, m.spawnTemp);
-            if (m.hot.valid) ImGui::Text("above %.0f C -> %s", m.hot.point, mats_[m.hot.into].label.c_str());
-            if (m.cold.valid) ImGui::Text("below %.0f C -> %s", m.cold.point, mats_[m.cold.into].label.c_str());
-            if (m.flammable()) ImGui::Text("ignites at %.0f C, burns into %s", m.ignitePoint, mats_[m.burnsInto.into].label.c_str());
-            for (const auto& e : reactions_->of(m.id)) {
-                const Reaction& r = reactions_->reactions()[e.index];
-                ImGui::Text("+ %s -> %s + %s", mats_[e.partner].label.c_str(), mats_[e.swapped ? r.outB : r.outA].label.c_str(),
-                            mats_[e.swapped ? r.outA : r.outB].label.c_str());
-            }
-            ImGui::EndTooltip();
-        }
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
-    ImGui::SeparatorText("Brush");
-    ImGui::SliderInt("Size", &brush_.radius, 0, 64);
-    int shape = brush_.shape == BrushShape::Circle ? 0 : 1;
-    if (ImGui::Combo("Shape", &shape, "Circle\0Square\0")) brush_.shape = shape == 0 ? BrushShape::Circle : BrushShape::Square;
-    int mode = brush_.mode == BrushMode::Place ? 0 : brush_.mode == BrushMode::Replace ? 1 : brush_.mode == BrushMode::Heat ? 2 : 3;
-    if (ImGui::Combo("Mode", &mode, "Fill empty\0Replace all\0Heat (H)\0Cool (J)\0")) {
-        const BrushMode modes[] = {BrushMode::Place, BrushMode::Replace, BrushMode::Heat, BrushMode::Cool};
-        brush_.mode = modes[mode];
-    }
-    if (brush_.mode == BrushMode::Heat || brush_.mode == BrushMode::Cool)
-        ImGui::SliderFloat("Heat", &brush_.heat, 1.0f, 200.0f, "%.0f C per tick");
-    ImGui::SliderFloat("Spray", &brush_.density, 0.05f, 1.0f, "%.2f");
-    ImGui::TextDisabled("LMB paint, RMB erase, Shift = replace");
-    ImGui::TextDisabled("Ctrl+LMB heat, Ctrl+RMB cool, P paint");
-    ImGui::TextDisabled("Wheel / [ ] size, MMB / WASD pan");
-
-    ImGui::SeparatorText("Simulation");
-    ImGui::Checkbox("Paused (Space)", &paused_);
-    ImGui::SameLine();
-    if (ImGui::Button("Step (.)")) { paused_ = true; ++stepRequests_; }
-    ImGui::SliderFloat("Speed", &speed_, 0.1f, 4.0f, "%.2fx");
-    SimParams& sp = sim_->params();
-    ImGui::Checkbox("Heat", &sp.heat);
-    ImGui::SameLine();
-    ImGui::Checkbox("Reactions", &sp.reactions);
-    ImGui::SliderFloat("Conduction", &sp.conduction, 0.05f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Air cooling", &sp.ambientRate, 0.0f, 0.03f, "%.4f");
-    ImGui::Checkbox("Temperature view (F5)", &showTemp_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Glow", &glow_);
-    if (ImGui::Button("Demo (R)")) loadScene("demo");
-    ImGui::SameLine();
-    if (ImGui::Button("Forge (F)")) loadScene("forge");
-    ImGui::SameLine();
-    if (ImGui::Button("Full churn (B)")) loadScene("churn");
-    ImGui::SameLine();
-    if (ImGui::Button("Gas lab (V)")) loadScene("gas");
-    ImGui::SameLine();
-    if (ImGui::Button("Quarry (Q)")) loadScene("quarry");
-    ImGui::SameLine();
-    if (ImGui::Button("Play (L)")) loadScene("play");
-    ImGui::SameLine();
-    if (ImGui::Button("World (O)")) loadScene("world");
-    ImGui::SameLine();
-    if (ImGui::Button("Showcase (I)")) loadScene("showcase");
-    ImGui::SameLine();
-    if (ImGui::Button("Circuits (U)")) loadScene("circuits");
-    ImGui::SameLine();
-    if (ImGui::Button("Clear (C)")) { particles_->clear(); bodies_->clear(); world_->clear(); gas_->clear(); electric_->clear(); }
-    ImGui::PopItemWidth();
-    ImGui::End();
-
-    drawGasUi();
-    drawLightUi();
-    drawLiquidUi();
-    drawFlameUi();
-    drawTextureUi();
-    drawPhase4Ui();
-    drawPlayerUi();
-    drawWorldUi();
-    drawElectricUi();
-
-    // debug overlay
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, 10), ImGuiCond_Always, ImVec2(1, 0));
-    ImGui::SetNextWindowBgAlpha(0.6f);
-    ImGui::Begin("Debug", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-    ImGui::TextDisabled("%s %s, debug", brand::kName, brand::kVersion);
-    float avg = 0, peak = 0;
-    for (float v : tickHistory_) { avg += v; peak = std::max(peak, v); }
-    avg /= static_cast<float>(tickHistory_.size());
-    ImGui::Text("%.0f fps  frame %.2f ms", io.Framerate, frameMs_);
-    ImGui::Text("tick %.3f ms  (avg %.3f, max %.3f)", st.tickMs, avg, peak);
-    ImGui::PlotLines("##ticks", tickHistory_.data(), static_cast<int>(tickHistory_.size()), tickHistoryPos_, nullptr, 0.0f,
-                     std::max(2.0f, peak * 1.2f), ImVec2(220, 36));
-    ImGui::Text("chunks %d / %d moving, %d heat", st.activeChunks, st.totalChunks, st.heatChunks);
-    ImGui::Text("events %llu (changes, burns, reactions)", static_cast<unsigned long long>(st.events));
-    ImGui::Text("cells moved/visited %llu", static_cast<unsigned long long>(st.cellsProcessed));
-    ImGui::Text("particles %d  bodies %d (%d px)  p4 %.2f ms", static_cast<int>(particles_->count()), bodies_->stats().bodies,
-                bodies_->stats().pixels, particles_->stats().stepMs + bodies_->stats().stepMs);
-    ImGui::Text("tick #%llu  threads %d  seed %llu", static_cast<unsigned long long>(st.tick), pool_->threadCount(),
-                static_cast<unsigned long long>(sim_->seed()));
-    ImGui::Text("%s", paused_ ? "PAUSED" : (slowMo_ ? "slow motion (T)" : speed_ != 1.0f ? "speed changed" : "60 Hz fixed tick"));
-    if (playerOn_)
-        ImGui::Text("player (%.1f, %.1f) v (%.2f, %.2f) %s", player_->x(), player_->y(), player_->vx(), player_->vy(),
-                    player_->grounded() ? "grounded" : "airborne");
-    ImGui::Checkbox("Chunks (F3)", &showChunks_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Dirty rects (Shift+F4)", &showDirty_);
-    int wx, wy;
-    if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
-        if (const Cell* c = world_->cell(wx, wy))
-            ImGui::Text("(%d, %d) %s%s%s%s  %.1f C  vy %.2f", wx, wy, mats_[c->material].label.c_str(),
-                        (c->flags & kFlagBurning) ? " (burning)" : "", (c->flags & kFlagBody) ? " (body)" : "",
-                        c->aux == kAuxPinned ? " (pinned)" : c->aux == kAuxSettled ? " (settled)" : "", c->temperature, c->vy / 256.0);
-    }
-    if (!materialErrors_.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "%zu material/reaction error(s), see log", materialErrors_.size());
-    ImGui::End();
-}
-
-void App::drawGasUi() {
-    GasGridParams& gp = gas_->params();
-    GasSolveParams& sp = gas_->solveParams();
-    const GasGridStats& gs = gas_->stats();
-    ImGui::SetNextWindowPos(ImVec2(10, 640), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Gas grid", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
-    ImGui::Checkbox("Gas grid on (G)", &gp.enabled);
-    ImGui::SameLine();
-    ImGui::Checkbox("Show gas", &showGas_);
-    if (gpuGas_) {
-        if (ImGui::Checkbox("GPU solver", &useGpuGas_)) gas_->setSolver(useGpuGas_ ? gpuGas_.get() : nullptr);
-    } else {
-        ImGui::TextDisabled("GPU solver unavailable: %s", gpuGasError_.c_str());
-    }
-    ImGui::Combo("View (F6)", &gasView_, "Gas\0Velocity\0Pressure\0");
-    ImGui::SliderInt("Pressure iterations", &sp.pressureIters, 4, 120);
-    ImGui::SliderFloat("Heat buoyancy", &sp.buoyancyHeat, 0.0f, 0.004f, "%.4f");
-    ImGui::SliderFloat("Gas buoyancy", &sp.buoyancyDensity, 0.0f, 0.05f, "%.3f");
-    ImGui::SliderFloat("Vorticity", &sp.vorticity, 0.0f, 0.5f, "%.2f");
-    ImGui::SliderFloat("Damping", &sp.damping, 0.95f, 1.0f, "%.3f");
-    ImGui::SliderFloat("Air exchange", &gp.airExchange, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Loss to ambient", &gp.ambientLoss, 0.0f, 0.02f, "%.4f");
-    ImGui::SliderFloat("Push on pixels", &gp.push, 0.0f, 2.0f, "%.2f");
-    ImGui::SliderFloat("Blast power", &blastPower_, 0.2f, 4.0f, "%.1f");
-    ImGui::SliderInt("Blast radius", &blastRadius_, 4, 40);
-    ImGui::TextDisabled("X: blast at the cursor");
-    double grams = static_cast<double>(gas_->massFixed()) / kGasMassOne;
-    ImGui::Text("%s solver %.2f ms (%s), coupling %.2f ms", gas_->solver().name(), gs.solveMs,
-                gpuGas_ && useGpuGas_ ? "upload+kernels+download" : "threads", gs.coupleMs);
-    ImGui::Text("grid %dx%d, %.0f mass units of gas", gas_->fields().w, gas_->fields().h, grams);
-    ImGui::Text("max speed %.2f px/tick, max |p| %.2f", gs.maxSpeed * kGasCell, gs.maxPressure);
-    ImGui::Text("in %lld, condensed %lld, burnt %lld, pushed %d px, %d shoves", gs.absorbed, gs.condensed, gs.burned, gs.pushed, gs.shoved);
-    int wx, wy;
-    if (screenToWorld(mouseX_, mouseY_, wx, wy)) {
-        const int i = (wx - gas_->originX()) / kGasCell, j = (wy - gas_->originY()) / kGasCell;
-        const GasFields& f = gas_->fields();
-        if (i >= 0 && j >= 0 && i < f.w && j < f.h) {
-            const int c = j * f.w + i;
-            ImGui::Text("cell (%d, %d): %.0f C, p %.3f, v (%.2f, %.2f)", i, j, gas_->temperature(c), f.p[c], f.uc(i, j), f.vc(i, j));
-            for (int k = 0; k < f.species; ++k)
-                if (f.m(k, c) > 0) ImGui::Text("  %s %.2f", mats_[gas_->species(k)].label.c_str(), static_cast<double>(f.m(k, c)) / kGasMassOne);
-        }
-    }
-    ImGui::PopItemWidth();
-    ImGui::End();
-}
-
-void App::drawPhase4Ui() {
-    SimParams& sp = sim_->params();
-    ParticleParams& pp = particles_->params();
-    BodyParams& bp = bodies_->params();
-    const ParticleStats& ps = particles_->stats();
-    const BodyStats& bs = bodies_->stats();
-    ImGui::SetNextWindowPos(ImVec2(400, 640), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Splashes & bodies", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
-    ImGui::Checkbox("Splash particles", &particlesOn_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Rigid bodies", &bp.enabled);
-    ImGui::SliderFloat("Splash speed", &sp.splashSpeed, 2.0f, 12.0f, "%.1f px/tick");
-    ImGui::SliderFloat("Restitution", &sp.restitution, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Mix rate", &sp.mixRate, 0.0f, 0.5f, "%.2f");
-    ImGui::SliderFloat("Wind on particles", &pp.gasDrag, 0.0f, 0.5f, "%.2f");
-    ImGui::SliderFloat("Shatter speed", &bp.shatterSpeed, 1.0f, 20.0f, "%.1f px/tick");
-    ImGui::SliderInt("Min body px", &bp.minPixels, 1, 64);
-    ImGui::SliderFloat("Wind on bodies", &bp.gasDrag, 0.0f, 0.2f, "%.3f");
-    ImGui::SliderFloat("Pressure on bodies", &bp.gasPush, 0.0f, 4.0f, "%.2f");
-    ImGui::TextDisabled("K: cut the clump under the cursor loose, X: blast");
-    ImGui::Text("particles %d (+%d, settled %d, waiting %d) %.2f ms", ps.count, ps.spawned, ps.settled, ps.waiting, ps.stepMs);
-    ImGui::Text("splashed %d px, momentum out/in %.2f", sim_->stats().splashed,
-                sim_->stats().splashMomentumIn > 0 ? sim_->stats().splashMomentumOut / sim_->stats().splashMomentumIn : 0.0);
-    ImGui::Text("bodies %d (%d awake, %d px, %d hidden) %.2f ms", bs.bodies, bs.awake, bs.pixels, bs.hidden, bs.stepMs);
-    ImGui::Text("  search %.2f ms, box2d %.2f ms, %d terrain boxes", bs.findMs, bs.solveMs, bs.terrainShapes);
-    ImGui::Text("  this tick: +%d, frozen %d, shattered %d, shoved %d px", bs.created, bs.frozen, bs.shattered, bs.displaced);
-    ImGui::PopItemWidth();
-    ImGui::End();
-}
-
-void App::drawPlayerUi() {
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, io.DisplaySize.y - 10), ImGuiCond_FirstUseEver, ImVec2(1, 1));
-    ImGui::Begin("Player", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    if (!playerOn_) {
-        ImGui::TextDisabled("No player. L: play scene, F7: spawn at the cursor");
-        ImGui::Checkbox("Creative (F2)", &creative_);
-        ImGui::End();
-        return;
-    }
-    const PlayerStats& ps = player_->stats();
-    const PlayerParams& pp = player_->params();
-    Inventory& inv = player_->inventory();
-    const float hp = std::max(0.0f, player_->health()) / pp.maxHealth;
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, hp > 0.5f ? ImVec4(0.3f, 0.8f, 0.4f, 1) : hp > 0.25f ? ImVec4(0.9f, 0.7f, 0.2f, 1) : ImVec4(0.9f, 0.25f, 0.2f, 1));
-    char hpText[32];
-    std::snprintf(hpText, sizeof hpText, "%.0f hp", player_->health());
-    ImGui::ProgressBar(hp, ImVec2(ImGui::GetFontSize() * 14.0f, 0), hpText);
-    ImGui::PopStyleColor();
-    ImGui::Checkbox("Creative (F2)", &creative_);
-    ImGui::SameLine();
-    ImGui::Checkbox("Build fixed (Z)", &placePinned_);
-    ImGui::SeparatorText("Tool (1-6, LMB)");
-    for (int t = 0; t < static_cast<int>(Tool::Count); ++t) {
-        char label[48];
-        std::snprintf(label, sizeof label, "%d %s", t + 1, toolName(static_cast<Tool>(t)));
-        if (t > 0 && t != 3) ImGui::SameLine();
-        if (ImGui::RadioButton(label, playerIn_.tool == static_cast<Tool>(t))) playerIn_.tool = static_cast<Tool>(t);
-    }
-    switch (playerIn_.tool) {
-    case Tool::Dig: ImGui::TextDisabled("dig under the brush into the inventory"); break;
-    case Tool::Jet: {
-        const MaterialId g = player_->jetGas(playerMat_);
-        ImGui::TextDisabled("boils or burns the material in hand (or any that works) into gas");
-        ImGui::TextDisabled("thrust away from the cursor; %s", g ? ("in hand makes " + mats_[g].label).c_str() : "in hand doesn't work");
-        break;
-    }
-    case Tool::Grapple: ImGui::TextDisabled("click: rope to the cursor / let go; W reel in, S let out"); break;
-    case Tool::Blast: ImGui::TextDisabled("click: set off a charge (aim at your feet to jump)"); break;
-    case Tool::Raft: ImGui::TextDisabled("click: a %dx%d raft of the solid in hand (timber floats)", pp.raftW, pp.raftH); break;
-    case Tool::Freeze: ImGui::TextDisabled("hold: freeze water to walk on"); break;
-    default: break;
-    }
-    ImGui::SeparatorText("In hand (wheel, RMB places)");
-    if (playerMat_ != kEmpty) {
-        ImGui::ColorButton("##hand", ImGui::ColorConvertU32ToFloat4(toImColor(displayPalette_[playerMat_][160])), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
-        ImGui::SameLine();
-        if (creative_) ImGui::Text("%s (unlimited)", mats_[playerMat_].label.c_str());
-        else ImGui::Text("%s x %lld", mats_[playerMat_].label.c_str(), inv.count(playerMat_));
-    }
-    if (creative_) {
-        ImGui::TextDisabled("creative: every material, charges unlimited");
-    } else {
-        ImGui::Text("carrying %lld / %lld px, %d charges", inv.total(), inv.capacity, inv.charges);
-        ImGui::BeginChild("##inv", ImVec2(ImGui::GetFontSize() * 14.0f, ImGui::GetFontSize() * 7.0f));
-        for (std::size_t i = 1; i < mats_.size(); ++i) {
-            const long long n = inv.count(static_cast<MaterialId>(i));
-            if (n <= 0) continue;
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::ColorButton("##c", ImGui::ColorConvertU32ToFloat4(toImColor(displayPalette_[i][160])), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
-            ImGui::SameLine();
-            char label[96];
-            std::snprintf(label, sizeof label, "%s  %lld", mats_[static_cast<MaterialId>(i)].label.c_str(), n);
-            if (ImGui::Selectable(label, playerMat_ == i)) playerMat_ = static_cast<MaterialId>(i);
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
-    }
-    if (creative_) {
-        // the full palette, like the sandbox panel
-        ImGui::BeginChild("##all", ImVec2(ImGui::GetFontSize() * 14.0f, ImGui::GetFontSize() * 7.0f));
-        for (std::size_t i = 1; i < mats_.size(); ++i) {
-            ImGui::PushID(static_cast<int>(i));
-            if (ImGui::Selectable(mats_[static_cast<MaterialId>(i)].label.c_str(), playerMat_ == i)) playerMat_ = static_cast<MaterialId>(i);
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
-    }
-    ImGui::SeparatorText("Feel");
-    ImGui::Text("%s, in liquid %.0f%%, wind (%.1f, %.1f) px/tick", player_->grounded() ? "on the ground" : "in the air", ps.submerged * 100.0f,
-                ps.windX, ps.windY);
-    ImGui::Text("hottest nearby %.0f C, jet gas %lld units, deaths %d", ps.hottest, ps.jetMassTotal, ps.deaths);
-    if (player_->roped()) ImGui::Text("rope %.0f px%s", player_->ropeLength(), player_->ropeBody() ? " (to a body)" : "");
-    ImGui::TextDisabled("A/D walk, W/Space jump & swim (hold in a fall to glide), S dive");
-    ImGui::TextDisabled("P pause, T slow-mo, F7 leave");
-    ImGui::End();
 }
 
 int App::gasSelfTest() {
@@ -1532,46 +1202,6 @@ int App::run() {
         }
     }
     return 0;
-}
-
-void App::drawWorldUi() {
-    ImGui::Begin("World", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    if (!streaming_) {
-        ImGui::TextDisabled("Fixed sandbox world: the streamed procedural world is O");
-        if (ImGui::Button("Open the world (O)")) loadScene("world");
-        ImGui::SameLine();
-        if (ImGui::Button("Load save (F9)")) loadWorld();
-        ImGui::End();
-        return;
-    }
-    const StreamStats& st = stream_->stats();
-    const int fx = static_cast<int>(std::floor(playerOn_ ? player_->x() : camX_ + kViewW * 0.5f));
-    if (gen_->overlay() == showcase_.get()) {
-        const int fy = static_cast<int>(std::floor(playerOn_ ? player_->centreY() : camY_ + kViewH * 0.5f));
-        const char* here = "outside";
-        for (const Showcase::Room& r : showcase_->rooms())
-            if (fx >= r.x0 && fx <= r.x1 && fy >= r.y0 && fy <= r.y1) { here = r.name.c_str(); break; }
-        ImGui::Text("Showcase: %s   (I restarts it, F8/F9 save/load)", here);
-    }
-    ImGui::Text("Seed %llu   biome %s   surface y %d", static_cast<unsigned long long>(gen_->seed()), biomeName(gen_->biome(fx)),
-                gen_->surfaceY(fx));
-    ImGui::Text("Awake window: chunks (%d, %d) .. (%d, %d)", stream_->windowX(), stream_->windowY(),
-                stream_->windowX() + stream_->params().chunksW - 1, stream_->windowY() + stream_->params().chunksH - 1);
-    ImGui::Text("Sleeping: %zu chunks, %.1f KiB encoded", stream_->storedChunks(), static_cast<double>(st.storeBytes) / 1024.0);
-    ImGui::Text("Shifts %d (last %.2f ms)  generated %d  woken %d  slept %d", st.shifts, st.lastShiftMs, st.generated, st.woken, st.slept);
-    const long long live = world_->totalMass(mats_) + particles_->totalMass() + bodies_->totalMass() +
-                           (playerOn_ ? player_->inventory().totalMass(mats_) : 0);
-    ImGui::Text("Mass: live %lld + sleeping %lld px, gas %.1f + %.1f", live, stream_->storedMass(),
-                static_cast<double>(gas_->massFixed()) / kGasMassOne, static_cast<double>(stream_->storedGasFixed()) / kGasMassOne);
-    drawTopDownUi();
-    if (ImGui::Button("Save (F8)")) saveWorld();
-    ImGui::SameLine();
-    if (ImGui::Button("Load (F9)")) loadWorld();
-    ImGui::SameLine();
-    if (ImGui::Button("New world")) startWorld();
-    ImGui::TextDisabled("%s save: %s", brand::kName, savePath_.c_str());
-    if (!worldMsg_.empty()) ImGui::TextWrapped("%s", worldMsg_.c_str());
-    ImGui::End();
 }
 
 } // namespace notita

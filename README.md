@@ -101,26 +101,27 @@ Controls:
 | `H` / `J` / `P` | brush mode: heat / cool / paint |
 | `R` / `F` / `B` / `C` | demo scene / forge scene / full churn scene / clear |
 | F3 / Shift+F4 | chunk grid / dirty rects overlay |
-| F4 | lighting on/off (Lighting panel: GPU/CPU, ambient, sky, gain, haze, bloom) |
+| F4 | lighting on/off (View > Lighting: GPU/CPU, ambient, sky, gain, haze, bloom) |
 | F5 | temperature view (hot pixels also glow in the normal view) |
-| F10 | old / new look and motion: liquids as pixels and the phase 1 powder/liquid rules vs smooth liquids and smooth grains ("Look & motion" panel has each switch) |
-| F11 | old / new flames: flame pixels vs flames as hot glowing gas on the gas grid ("Flames" panel has the knobs) |
-| F12 | surface relief and wet look on solids and powders on / off ("Textures" panel has the strength sliders) |
+| F10 | old / new look and motion: liquids as pixels and the phase 1 powder/liquid rules vs smooth liquids and smooth grains (View > Liquids and Sim > Powder & liquid motion have each switch) |
+| F11 | old / new flames: flame pixels vs flames as hot glowing gas on the gas grid (Sim > Flames and View > Flames have the knobs) |
+| F12 | surface relief and wet look on solids and powders on / off (View > Textures has the strength sliders) |
 | F6 | gas view: gas / velocity (hue = direction) / pressure (red +, blue -) |
 | `G` / `X` / `V` | gas grid on/off / blast at the cursor (also kicks bodies) / gas lab scene |
 | `Q` / `K` | quarry scene / cut the solid clump under the cursor loose as a rigid body |
-| Tab or F1 | hide the panels |
+| Tab or F1 | show / hide the menu (one window with tabs: Materials, Player, World, Sim, View, Performance, Debug; it remembers its place and tab in `imgui.ini`) |
+| Shift+Tab or Shift+F1 | show / hide the HUD (material, brush size, fps, tick ms) |
 | `L` / F7 | play scene with the player / spawn (or remove) a player at the cursor in any scene |
 | F2 / `T` | creative mode on/off / slow motion |
-| `O` | the streamed procedural world (World panel: window, sleeping chunks, mass, save/load) |
-| `I` | the showcase building (the World panel names the room you're in) |
+| `O` | the streamed procedural world (World tab: window, sleeping chunks, mass, save/load) |
+| `I` | the showcase building (the World tab names the room you're in) |
 | F8 / F9 | save the world to `notita_world.sav` / load it (world and showcase scenes) |
-| `U` | circuits scene (Electricity panel: live pixels, power, lamps, sparks, solver, tuning) |
+| `U` | circuits scene (Sim > Electricity: live pixels, power, lamps, sparks, solver, tuning) |
 | `E` | flip the switch under the cursor (with a player: the nearest one within tool reach, 56 px) |
 | `Y` | lightning down the cursor's column |
 | `M` | electricity overlay: current, then potential, then off |
 
-With a player in the world the keys change (the Player panel lists them too):
+With a player in the world the keys change (the Player tab lists them too):
 
 | Input | Action |
 | --- | --- |
@@ -159,9 +160,10 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   ThreadPool.*  persistent workers, blocking parallel-for
   Brush.*, Scenes.*
 src/script/   sandboxed Luau, load time only: data/reactions.luau -> ReactionTable
-src/app/      SDL3 window, GPU presentation, ImGui panels
+src/app/      SDL3 window, GPU presentation, the ImGui menu
+  UiMenu.*, AppUi.cpp   the one tabbed menu + HUD; each system registers its tab / sections
   GpuGasSolver.*, shaders/gas.hlsl   the gas grid math as SDL3 GPU compute kernels
-  GpuLight.*, AppLight.cpp, shaders/light.hlsl   phase 6 lighting: GPU pass, its inputs, panel, self-test
+  GpuLight.*, AppLight.cpp, shaders/light.hlsl   phase 6 lighting: GPU pass, its inputs, menu section, self-test
 src/light/    CPU reference of the light pass (no SDL; the tests use it)
 src/bench/    headless benchmark
 tests/        unit tests (tiny built-in harness)
@@ -606,8 +608,8 @@ generator back to it before anything new is generated.
 
 Past the course, east of the building, a concrete box with TOP DOWN over it
 is seen from above: inside it gravity points into the screen instead of down.
-Walk in through the door in its west wall (or `--scene topdown`, or the World
-panel's "Go to the top-down room" button).
+Walk in through the door in its west wall (or `--scene topdown`, or the
+menu's World tab: Top-down room, "Go to the top-down room").
 
 ![The TOP DOWN room: gutter and tank, pond, murk tank, hut, sand pile, crate](docs/topdown/room.png)
 ![After the smoke run: the gutter drained onto the floor, a path pushed through the sand, the crate blasted south, the hut burning, the murk out of its tank](docs/topdown/demo.png)
@@ -638,8 +640,8 @@ so they stream and save with the scene for free. The CA asks per pixel (only
 in chunks a region touches), the gas solver gets the regions as grid-cell
 rects (CPU and gas.hlsl both skip buoyancy there), bodies, particles and the
 player ask at their centre. Mass, heat and determinism rules are unchanged
-(`notita_tests topdown`). The World panel's "Gravity into the screen there"
-box turns the regions off to compare with the side view.
+(`notita_tests topdown`). In the menu's World tab, Top-down room, "Gravity
+into the screen there" turns the regions off to compare with the side view.
 
 ## Benchmark
 

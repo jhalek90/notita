@@ -9,6 +9,7 @@
 //              [--old-look] [--old-motion] [--lockstep]   (#477: liquids as pixels / phase 1 powder and liquid rules; F10 flips)
 //              [--old-flames]  (#480: flames as pixels instead of glowing gas on the grid; F11 flips)
 //              [--at x,y]     (start with the player's feet at x,y: screenshots of one room)
+//              [--tab Name] [--no-hud] [--no-menu]  (#484: open the menu on a tab, e.g. --tab Sim; start without the HUD / menu)
 #include <SDL3/SDL_main.h>
 
 #include "App.h"
@@ -41,6 +42,9 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--light-selftest")) opts.lightSelfTest = true;
         else if (!std::strcmp(argv[i], "--load")) { opts.load = next(); opts.scene = "world"; }
         else if (!std::strcmp(argv[i], "--autoplay")) opts.autoplay = true;
+        else if (!std::strcmp(argv[i], "--tab")) opts.tab = next();       // #484: open the menu on this tab
+        else if (!std::strcmp(argv[i], "--no-hud")) opts.noHud = true;
+        else if (!std::strcmp(argv[i], "--no-menu")) opts.noMenu = true;
         else if (!std::strcmp(argv[i], "--at")) {
             opts.at = std::sscanf(next(), "%f,%f", &opts.atX, &opts.atY) == 2;
         }

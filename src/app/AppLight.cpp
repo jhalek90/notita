@@ -237,39 +237,37 @@ void App::lightScreenshot() {
         SDL_Log("lighting: could not read the lit view back for the screenshot");
 }
 
-void App::drawLightUi() {
-    const ImGuiIO& io = ImGui::GetIO(); // right edge, between the debug overlay and the player panel
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, io.DisplaySize.y * 0.35f), ImGuiCond_FirstUseEver, ImVec2(1, 0));
-    ImGui::Begin("Lighting", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
-    ImGui::Checkbox("Lighting (F4)", &lightOn_);
-    if (gpuLight_) {
-        ImGui::SameLine();
-        ImGui::Checkbox("GPU", &useGpuLight_);
-    } else {
-        ImGui::TextDisabled("GPU pass unavailable: %s", gpuLightError_.c_str());
-    }
-    if (lightOn_ && !lightingActive()) ImGui::TextDisabled("(off in the temperature / velocity / pressure views)");
-    LightParams& p = lightParams_;
-    ImGui::SliderFloat("Ambient", &p.ambient, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Sky", &p.sky, 0.0f, 1.5f, "%.2f");
-    ImGui::SliderFloat("Light gain", &p.gain, 0.0f, 4.0f, "%.2f");
-    ImGui::SliderFloat("Haze", &p.haze, 0.0f, 0.3f, "%.2f");
-    ImGui::SliderFloat("Bloom", &p.bloom, 0.0f, 2.0f, "%.2f");
-    const bool gpu = useGpuLight_ && gpuLight_;
-    const LightParams& used = gpu ? lightParams_ : lightParamsCpu_;
-    ImGui::Text("%s: %d px cells, %d cones x4, %d cells long", gpu ? "GPU" : "CPU", used.cellPx, used.dirs, used.range);
-    ImGui::Text("inputs %.2f ms (CPU)", lightInputMs_);
-    if (gpu) {
-        if (ImGui::Button("Measure GPU")) lightGpuMs_ = gpuLight_->benchmark(lightParams_, renderer_.texture(), 20);
-        ImGui::SameLine();
-        if (lightGpuMs_ > 0) ImGui::Text("light pass %.3f ms (GPU)", lightGpuMs_);
-        else ImGui::TextDisabled("light pass: not measured");
-    } else {
-        ImGui::Text("light pass %.2f ms (CPU, %d threads)", cpuLight_.lastMs(), pool_->threadCount());
-    }
-    ImGui::PopItemWidth();
-    ImGui::End();
+void App::registerLightUi() { // #484: View > Lighting
+    menu_.add("View", "Lighting", 30, [this] {
+        ImGui::PushItemWidth(ImGui::GetFontSize() * 10.0f);
+        ImGui::Checkbox("Lighting (F4)", &lightOn_);
+        if (gpuLight_) {
+            ImGui::SameLine();
+            ImGui::Checkbox("GPU", &useGpuLight_);
+        } else {
+            ImGui::TextDisabled("GPU pass unavailable: %s", gpuLightError_.c_str());
+        }
+        if (lightOn_ && !lightingActive()) ImGui::TextDisabled("(off in the temperature / velocity / pressure views)");
+        LightParams& p = lightParams_;
+        ImGui::SliderFloat("Ambient", &p.ambient, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Sky", &p.sky, 0.0f, 1.5f, "%.2f");
+        ImGui::SliderFloat("Light gain", &p.gain, 0.0f, 4.0f, "%.2f");
+        ImGui::SliderFloat("Haze", &p.haze, 0.0f, 0.3f, "%.2f");
+        ImGui::SliderFloat("Bloom", &p.bloom, 0.0f, 2.0f, "%.2f");
+        const bool gpu = useGpuLight_ && gpuLight_;
+        const LightParams& used = gpu ? lightParams_ : lightParamsCpu_;
+        ImGui::Text("%s: %d px cells, %d cones x4, %d cells long", gpu ? "GPU" : "CPU", used.cellPx, used.dirs, used.range);
+        ImGui::Text("inputs %.2f ms (CPU)", lightInputMs_);
+        if (gpu) {
+            if (ImGui::Button("Measure GPU")) lightGpuMs_ = gpuLight_->benchmark(lightParams_, renderer_.texture(), 20);
+            ImGui::SameLine();
+            if (lightGpuMs_ > 0) ImGui::Text("light pass %.3f ms (GPU)", lightGpuMs_);
+            else ImGui::TextDisabled("light pass: not measured");
+        } else {
+            ImGui::Text("light pass %.2f ms (CPU, %d threads)", cpuLight_.lastMs(), pool_->threadCount());
+        }
+        ImGui::PopItemWidth();
+    });
 }
 
 int App::lightSelfTest() {

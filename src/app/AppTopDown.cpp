@@ -1,6 +1,7 @@
 // #483: the app side of the top-down regions (src/sim/Gravity.h): setting the
 // overlay also sets the world's flat regions, the floor of a region is drawn
-// as tiles (its empty pixels), a small panel, and the --scene topdown smoke run.
+// as tiles (its empty pixels), the menu's World > Top-down room section, and
+// the --scene topdown smoke run.
 #include "App.h"
 
 #include "imgui.h"
@@ -56,18 +57,23 @@ void App::drawFloorTiles() {
     }
 }
 
-void App::drawTopDownUi() {
-    if (gen_->overlay() != showcase_.get()) return;
-    ImGui::Separator();
-    const bool here = playerOn_ && player_->topDown();
-    ImGui::Text("Top-down room: %s", here ? "you're in it (seen from above)" : "east of the course");
-    if (ImGui::Checkbox("Gravity into the screen there", &topDownOn_)) applyOverlay(gen_->overlay());
-    if (ImGui::Button("Go to the top-down room")) {
-        if (playerOn_) player_->spawn(showcase_->topDownX(), showcase_->topDownY());
-        else spawnPlayer(showcase_->topDownX(), showcase_->topDownY(), true);
-    }
-    ImGui::TextDisabled("Inside: WASD walks 8 ways (no jumping), walking shoves sand,");
-    ImGui::TextDisabled("dig/place as usual, E flips the lamp and the hut igniter; dig the gas tank's plug.");
+void App::registerTopDownUi() {
+    menu_.add("World", "Top-down room", 25, [this] {
+        if (gen_->overlay() != showcase_.get()) {
+            ImGui::TextDisabled("A room seen from above (gravity into the screen), past the showcase's course");
+            if (ImGui::Button("Open the top-down room")) loadScene("topdown");
+            return;
+        }
+        const bool here = playerOn_ && player_->topDown();
+        ImGui::Text("Top-down room: %s", here ? "you're in it (seen from above)" : "east of the course");
+        if (ImGui::Checkbox("Gravity into the screen there", &topDownOn_)) applyOverlay(gen_->overlay());
+        if (ImGui::Button("Go to the top-down room")) {
+            if (playerOn_) player_->spawn(showcase_->topDownX(), showcase_->topDownY());
+            else spawnPlayer(showcase_->topDownX(), showcase_->topDownY(), true);
+        }
+        ImGui::TextDisabled("Inside: WASD walks 8 ways (no jumping), walking shoves sand and crates,");
+        ImGui::TextDisabled("dig/place as usual, E flips the lamp and the hut igniter; dig the gas tank's plug.");
+    });
 }
 
 // --scene topdown --autoplay: up the gutter to dig a hole in its gate, back
