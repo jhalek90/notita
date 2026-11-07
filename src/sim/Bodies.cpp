@@ -132,6 +132,7 @@ bool BodySystem::flood(int sx, int sy, Clump& out, bool ignorePins) {
         out.x.push_back(x);
         out.y.push_back(y);
         if (c->aux != kAuxSettled && (ignorePins || c->aux != kAuxPinned)) out.settled = false;
+        if (!out.resting && world_.gravity().flat(x, y)) out.resting = true; // #483: the floor holds it
         for (int d = 0; d < 4; ++d) {
             const int nx = x + kDx[d], ny = y + kDy[d];
             const Cell* n = cellAt(nx, ny);
@@ -635,6 +636,27 @@ void BodySystem::applyGas(RigidBody& b) {
 // deck or running down its side don't count) sets the waterline, and every body pixel at or below it
 // displaces liquid. Archimedes on those pixels, at their centroid (so a raft
 // rights itself), and drag on the submerged share.
+// #483: on a top-down floor gravity points into the screen, so the floor's
+// friction is what stops a body: a constant deceleration against its motion
+// (never more than it takes to stop it this tick) and a damped spin.
+void BodySystem::applyFloor(RigidBody& b) {
+    b.submerged = 0;
+    b.floats = false;
+    const std::size_t i = static_cast<std::size_t>(&b - bodies_.data());
+    const b2BodyId id = impl_->ids[i];
+    const b2Vec2 v = b2Body_GetLinearVelocity(id);
+    const float vx = impl_->velToPx(v.x), vy = impl_->velToPx(v.y);
+    const float sp = std::sqrt(vx * vx + vy * vy);
+    const float mass = b2Body_GetMass(id);
+    if (sp > 1.0e-6f) {
+        const float a = std::min(sp, params_.floorFriction); // px/tick^2
+        const float k = impl_->velToM(1.0f) / kTickSeconds;
+        b2Body_ApplyForceToCenter(id, {-mass * a * (vx / sp) * k, -mass * a * (vy / sp) * k}, true);
+    }
+    const float w = b2Body_GetAngularVelocity(id);
+    b2Body_ApplyTorque(id, -b2Body_GetRotationalInertia(id) * std::clamp(params_.floorSpin, 0.0f, 1.0f) * w / kTickSeconds, true);
+}
+
 void BodySystem::applyLiquid(RigidBody& b) {
     b.submerged = 0;
     b.floats = false;
@@ -845,8 +867,15 @@ void BodySystem::step() {
     buildTerrain();
     for (std::size_t i = 0; i < bodies_.size(); ++i) {
         RigidBody& b = bodies_[i];
+        const b2BodyId bid = impl_->ids[i];
+        const b2Vec2 com = b2ToVec2(b2Body_GetWorldCenter(bid));
+        const bool flat = world_.gravity().flat(static_cast<int>(std::floor(impl_->toPx(com.x))),
+                                                                        static_cast<int>(std::floor(impl_->toPx(com.y))));
+        b2Body_SetGravityScale(bid, flat ? 0.0f : 1.0f);
+        b.onFloor = flat;
         applyGas(b);
-        applyLiquid(b);
+        if (flat) applyFloor(b);
+        else applyLiquid(b);
         const b2Vec2 v = b2Body_GetLinearVelocity(impl_->ids[i]); // the velocity going into the step
         b.vx = impl_->velToPx(v.x);
         b.vy = impl_->velToPx(v.y);
@@ -879,7 +908,7 @@ void BodySystem::step() {
             shatter(b); // replaces this entry; fragments are appended
             continue;
         }
-        b.asleep = (b.awake || b.floats) ? 0 : b.asleep + 1; // a floating body bobs; it never freezes into pixels
+        b.asleep = (b.awake || b.floats || b.onFloor) ? 0 : b.asleep + 1; // a floating body bobs; it never freezes into pixels
         if (b.asleep >= params_.freezeAfter) {
             freeze(b);
             continue;

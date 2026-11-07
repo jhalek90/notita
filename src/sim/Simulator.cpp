@@ -34,6 +34,7 @@ struct TickContext {
     const std::uint8_t* miscible;    // [a * matCount + b]: the two liquids blend
     bool anyMiscible;
     bool particles;                  // a ParticleSystem takes splashes
+    const GravityMap* gravity;       // #483: top-down regions (null = none / off)
 };
 
 // Everything one chunk update needs. Lives on the worker's stack.
@@ -46,6 +47,8 @@ public:
         for (int dy = -1; dy <= 1; ++dy)
             for (int dx = -1; dx <= 1; ++dx)
                 nb_[dy + 1][dx + 1] = world.chunk(self.coord.x + dx, self.coord.y + dy);
+        // #483: only chunks a top-down region touches pay for the per-pixel lookup
+        flatChunk_ = ctx.gravity && ctx.gravity->touches(ox_, oy_, ox_ + kChunkMask, oy_ + kChunkMask);
     }
 
     std::uint32_t run() {
@@ -70,6 +73,12 @@ private:
     void updateCell(int x, int y, Cell* c, const ThermalProps* tp) {
         if (tp[c->material].reactive && ctx_.reactions && tryReact(x, y, c)) return;
         const Material& m = mats_[c->material];
+        if (flatChunk_ && m.kind != MaterialKind::Solid && m.kind != MaterialKind::Empty)
+            if (const FlatRegion* r = ctx_.gravity->at(x, y)) {
+                ++processed_;
+                updateFlat(x, y, c, m, *r);
+                return;
+            }
         switch (m.kind) {
         case MaterialKind::Powder: ++processed_; updatePowder(x, y, c, m); break;
         case MaterialKind::Liquid: ++processed_; updateLiquid(x, y, c, m); break;
@@ -612,13 +621,233 @@ private:
         }
     }
 
+    // ------------------------------------------------------------ top-down (#483)
+    // Inside a FlatRegion the world is seen from above and gravity points into
+    // the screen. Cell::vx / vy are in-plane speeds there (1/256 px per tick):
+    // powders rest on the floor until something gives them speed (a blast, the
+    // wind, a landing particle, a shove from the grain behind) and then slide
+    // to a stop; liquids run down the region's slope, take speed the same way
+    // and otherwise hold together as puddles (surface tension: an edge pixel
+    // moves to an open neighbour with more liquid around it, so ragged edges
+    // round off and the puddle sleeps); gases wander in any direction (no
+    // buoyancy) and flames flicker any way. Moves are at most 1 px per axis.
+
+    static constexpr int kFlatVCap = kVelOne * 3 / 2;
+
+    bool flatOpen(const Material& m, const Cell* t) const {
+        if (!t || (t->flags & kFlagBody)) return false;
+        const Material& tm = mats_[t->material];
+        if (tm.kind == MaterialKind::Empty) return true;
+        return tm.kind == MaterialKind::Gas && t->material != m.id;
+    }
+
+    // Liquid and solid pixels around (x, y): a liquid wets solids, so a puddle hugs its
+    // walls (and a pool its electrodes) the way it holds to itself. The moves below only
+    // ever raise the number of such contacts, which is what makes a puddle settle.
+    int liquidAround(int x, int y, int skipX, int skipY) {
+        int n = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                if ((dx == 0 && dy == 0) || (x + dx == skipX && y + dy == skipY)) continue;
+                const Cell* t = at(x + dx, y + dy);
+                if (!t || (t->flags & kFlagBody)) continue;
+                const MaterialKind k = mats_[t->material].kind;
+                if (k == MaterialKind::Liquid || k == MaterialKind::Solid) ++n;
+            }
+        return n;
+    }
+
+    // Slides along (vx, vy); returns whether the pixel moved. What blocks it
+    // takes half the push when it is the same kind of loose pixel (a grain
+    // shoves the grain in front, a pushed puddle passes the push along),
+    // otherwise that component stops. Floor friction keeps `keep`/16 a tick.
+    bool flatSlide(int& x, int& y, Cell*& c, const Material& m, int vx, int vy, int keep) {
+        int dx = 0, dy = 0;
+        if (vx != 0 && static_cast<int>(rng_.below(kVelOne)) < std::abs(vx)) dx = vx > 0 ? 1 : -1;
+        if (vy != 0 && static_cast<int>(rng_.below(kVelOne)) < std::abs(vy)) dy = vy > 0 ? 1 : -1;
+        bool moved = false;
+        if (dx != 0 || dy != 0) {
+            const bool xFirst = std::abs(vx) >= std::abs(vy);
+            const int tries[3][2] = {{dx, dy}, {xFirst ? dx : 0, xFirst ? 0 : dy}, {xFirst ? 0 : dx, xFirst ? dy : 0}};
+            for (const auto& t : tries) {
+                if (t[0] == 0 && t[1] == 0) continue;
+                Cell* n = at(x + t[0], y + t[1]);
+                if (!n) continue;
+                bool open = flatOpen(m, n);
+                // a thrown grain sinks into a puddle (it ends up on the floor under the liquid)
+                if (!open && m.kind == MaterialKind::Powder && !(n->flags & kFlagBody) &&
+                    mats_[n->material].kind == MaterialKind::Liquid)
+                    open = rng_.unit() < sinkChance(m, mats_[n->material]);
+                if (!open) continue;
+                swapCells(c, x, y, n, x + t[0], y + t[1]);
+                c = n;
+                x += t[0];
+                y += t[1];
+                moved = true;
+                break;
+            }
+            if (!moved && (dx == 0) != (dy == 0)) {
+                // blocked straight ahead: slip past it on a forward diagonal and keep part of
+                // the speed sideways (a stream fans out against what is in front of it)
+                const int side = rng_.coin() ? 1 : -1;
+                for (int k = 0; k < 2 && !moved; ++k) {
+                    const int e = k == 0 ? side : -side;
+                    const int ex = dx != 0 ? dx : e, ey = dy != 0 ? dy : e;
+                    Cell* n = at(x + ex, y + ey);
+                    if (!flatOpen(m, n)) continue;
+                    swapCells(c, x, y, n, x + ex, y + ey);
+                    c = n;
+                    x += ex;
+                    y += ey;
+                    moved = true;
+                    if (dx != 0) vy += e * std::abs(vx) / 2;
+                    else vx += e * std::abs(vy) / 2;
+                }
+            }
+            if (!moved) {
+                Cell* n = at(x + dx, y + dy);
+                if (n && !(n->flags & kFlagBody) && mats_[n->material].kind == m.kind) {
+                    n->vx = static_cast<std::int16_t>(std::clamp(n->vx + vx / 2, -kFlatVCap, kFlatVCap));
+                    n->vy = static_cast<std::int16_t>(std::clamp(n->vy + vy / 2, -kFlatVCap, kFlatVCap));
+                    wake(x + dx, y + dy);
+                    vx /= 2;
+                    vy /= 2;
+                } else {
+                    if (dx != 0) vx = 0;
+                    if (dy != 0) vy = 0;
+                }
+            }
+        }
+        // floor friction (a slow pixel stops; slower than the grains' threshold, so a
+        // slope's few units a tick can build up)
+        auto rub = [keep](int v) { v = v * keep / 16; return std::abs(v) < 4 ? 0 : v; };
+        vx = rub(vx);
+        vy = rub(vy);
+        c->vx = static_cast<std::int16_t>(std::clamp(vx, -kFlatVCap, kFlatVCap));
+        c->vy = static_cast<std::int16_t>(std::clamp(vy, -kFlatVCap, kFlatVCap));
+        if (c->vx != 0 || c->vy != 0 || moved) wake(x, y);
+        return moved;
+    }
+
+    void updateFlat(int x, int y, Cell* c, const Material& m, const FlatRegion& r) {
+        switch (m.kind) {
+        case MaterialKind::Powder:
+            // resting grains lie on the floor: nothing to do until they get speed
+            if (c->vx != 0 || c->vy != 0) flatSlide(x, y, c, m, c->vx, c->vy, 12);
+            break;
+        case MaterialKind::Liquid: flatLiquid(x, y, c, m, r); break;
+        case MaterialKind::Gas: flatGas(x, y, c, m); break;
+        case MaterialKind::Special: updateFlame(x, y, c, true); break;
+        default: break;
+        }
+    }
+
+    void flatLiquid(int x, int y, Cell* c, const Material& m, const FlatRegion& r) {
+        if (ctx_.anyMiscible && mix(x, y, c, m)) return;
+        const bool burning = (c->flags & kFlagBurning) != 0;
+        // the floor's slope (thick liquids feel it less), plus whatever speed it was given
+        // (a pixel at rest with nothing open or moving downhill of it stays at rest: a full
+        // tank behind its gate sleeps)
+        float flow = 1.0f - 0.8f * m.viscosity;
+        if ((r.slopeX != 0 || r.slopeY != 0) && c->vx == 0 && c->vy == 0) {
+            const int sx = std::abs(r.slopeX) >= std::abs(r.slopeY) ? (r.slopeX > 0 ? 1 : -1) : 0;
+            const int sy = sx == 0 ? (r.slopeY > 0 ? 1 : -1) : 0;
+            const Cell* dn = at(x + sx, y + sy);
+            const bool goes = flatOpen(m, dn) ||
+                              (dn && mats_[dn->material].kind == MaterialKind::Liquid && (dn->vx != 0 || dn->vy != 0));
+            if (!goes) flow = 0.0f;
+        }
+        const int vx = c->vx + static_cast<int>(static_cast<float>(r.slopeX) * flow);
+        const int vy = c->vy + static_cast<int>(static_cast<float>(r.slopeY) * flow);
+        if (vx != 0 || vy != 0) {
+            const int keep = 15 - static_cast<int>(6.0f * m.viscosity);
+            if (flatSlide(x, y, c, m, vx, vy, keep)) {
+                if (!burning) c->life = 0; // it flowed: it may even out again
+                return;
+            }
+            if (r.slopeX == 0 && r.slopeY == 0 && (c->vx != 0 || c->vy != 0)) return; // still coasting
+        }
+        if (m.viscosity > 0.0f && rng_.unit() < m.viscosity * 0.5f) {
+            if (burning || c->life < params_.flatRuns) wake(x, y);
+            return;
+        }
+        // surface tension: an edge pixel moves to the open neighbour with the most
+        // liquid around it (not counting itself) if that is more than it has now; a
+        // few sideways moves (as much) are allowed so a puddle can even out, then
+        // it rests. A strict move never leaves an enclosed hole behind. On a slope
+        // it never climbs: it spreads across and down the fall line.
+        static constexpr int kDx[4] = {1, -1, 0, 0}, kDy[4] = {0, 0, 1, -1};
+        const int first = static_cast<int>(rng_.below(4));
+        // pressure first: an open pixel with liquid round it (a hole or a gap a dig, a split
+        // or a blast left in a puddle) is filled from behind. The line of liquid behind this
+        // pixel shifts one step into it, so the hole moves up to 12 px back towards the
+        // puddle's edge, but only if it ends up with less liquid round it than it has now
+        // (the puddle's surface gets shorter, so this always settles).
+        for (int k = 0; k < 4; ++k) {
+            const int d = (first + k) & 3;
+            const int hx = x + kDx[d], hy = y + kDy[d];
+            if (!flatOpen(m, at(hx, hy))) continue;
+            const int around = liquidAround(hx, hy, hx, hy);
+            if (around < 3) continue;
+            int n = 0;
+            while (n < 12) {
+                const Cell* b = at(x - kDx[d] * (n + 1), y - kDy[d] * (n + 1));
+                if (!b || b->stamp == stamp_ || (b->flags & kFlagBody) || mats_[b->material].kind != MaterialKind::Liquid) break;
+                ++n;
+            }
+            const int bx = x - kDx[d] * n, by = y - kDy[d] * n;
+            const int after = liquidAround(bx, by, bx, by) + (n == 0 ? 1 : 0); // the old hole is liquid then
+            if (after >= around) continue;
+            int px = hx, py = hy;
+            for (int i = 0; i <= n; ++i) {
+                const int qx = x - kDx[d] * i, qy = y - kDy[d] * i;
+                swapCells(at(px, py), px, py, at(qx, qy), qx, qy);
+                px = qx;
+                py = qy;
+            }
+            return;
+        }
+        int best = -1, bestD = -1;
+        for (int k = 0; k < 4; ++k) {
+            const int d = (first + k) & 3;
+            if (kDx[d] * r.slopeX + kDy[d] * r.slopeY < 0) continue;
+            if (!flatOpen(m, at(x + kDx[d], y + kDy[d]))) continue;
+            const int nt = liquidAround(x + kDx[d], y + kDy[d], x, y);
+            if (nt > best) { best = nt; bestD = d; }
+        }
+        if (bestD < 0) return;
+        const int here = liquidAround(x, y, x, y);
+        const bool better = best > here;
+        const bool even = best == here && here >= 2 && !burning && c->life < params_.flatRuns;
+        if (!better && !even) return;
+        if (even) {
+            if (!rng_.chance16(65536 / 4)) { wake(x, y); return; }
+            ++c->life;
+        }
+        swapCells(c, x, y, at(x + kDx[bestD], y + kDy[bestD]), x + kDx[bestD], y + kDy[bestD]);
+    }
+
+    void flatGas(int x, int y, Cell* c, const Material& m) {
+        // no buoyancy: a random walk over the 8 neighbours, a little further along open floor
+        static constexpr int kDx[8] = {1, 1, 0, -1, -1, -1, 0, 1}, kDy[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+        const int d = static_cast<int>(rng_.below(8));
+        const int reach = 1 + (m.spread > 1 ? static_cast<int>(rng_.below(static_cast<std::uint32_t>(std::min(m.spread, 4)))) : 0);
+        int got = 0;
+        for (int i = 1; i <= reach; ++i) {
+            if (!flatOpen(m, at(x + kDx[d] * i, y + kDy[d] * i))) break;
+            got = i;
+        }
+        if (got > 0) swapCells(c, x, y, at(x + kDx[d] * got, y + kDy[d] * got), x + kDx[d] * got, y + kDy[d] * got);
+        else wake(x, y);
+    }
+
     // ---------------------------------------------------------------- fire
 
     std::uint8_t flameLife(const ThermalProps& f) {
         return static_cast<std::uint8_t>(f.lifeMin + static_cast<int>(rng_.below(static_cast<std::uint32_t>(f.lifeMax - f.lifeMin + 1))));
     }
 
-    void updateFlame(int x, int y, Cell* c) {
+    void updateFlame(int x, int y, Cell* c, bool flat = false) {
         const ThermalProps& p = ctx_.thermal[c->material];
         if (c->life == 0) {
             c->life = flameLife(p); // placed by a brush: start its clock
@@ -634,13 +863,15 @@ private:
         c->temperature = std::max(c->temperature, p.spawnTemp);
         c->stamp = stamp_;
         wake(x, y);
-        // flicker upwards through air
+        // flicker upwards through air (#483: seen from above, any way)
         const int dx = static_cast<int>(rng_.below(3)) - 1;
+        const int up = flat ? static_cast<int>(rng_.below(3)) - 1 : -1;
         const int tries[2] = {dx, 0};
         for (int k = 0; k < (dx != 0 ? 2 : 1); ++k) {
-            Cell* t = at(x + tries[k], y - 1);
+            if (flat && tries[k] == 0 && up == 0) continue;
+            Cell* t = at(x + tries[k], y + up);
             if (t && t->material == kEmpty) {
-                swapCells(c, x, y, t, x + tries[k], y - 1);
+                swapCells(c, x, y, t, x + tries[k], y + up);
                 return;
             }
         }
@@ -955,6 +1186,7 @@ private:
     std::uint32_t events_ = 0;
     bool queued_ = false; // fallGrain: blocked by a moving grain without moving (keeps its speed)
     int advanceDepth_ = 0; // advance() recursion
+    bool flatChunk_ = false; // #483: a top-down region touches this chunk
 };
 
 static_assert(16 + 1 + 1 < kMaxReach, "max fall / spread must stay inside the checkerboard margin");
@@ -1076,7 +1308,8 @@ void Simulator::updateChunk(Chunk& chunk, int pass) {
                           params_.reactions ? reactions_ : nullptr, reactPairs_.data(), gas_ != nullptr,
                           gas_ != nullptr && params_.gridFlames && gas_->takesFlames(),
                           static_cast<std::uint32_t>(std::clamp(params_.emberChance, 0.0f, 1.0f) * 65536.0f),
-                          mats_.miscibleTable().data(), anyMiscible_, particles_ != nullptr};
+                          mats_.miscibleTable().data(), anyMiscible_, particles_ != nullptr,
+                          world_.gravity().empty() ? nullptr : &world_.gravity()};
     ChunkUpdate u(world_, ctx, chunk, s, stamp);
     chunk.cellsProcessed = u.run();
 }

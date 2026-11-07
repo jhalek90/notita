@@ -239,6 +239,7 @@ WorldResult runWorld(const MaterialRegistry& mats, const ReactionTable& reaction
     if (showcase) {
         show = std::make_unique<Showcase>(mats);
         gen.setOverlay(show.get());
+        world.gravity().set(show->flatRegions()); // #483: the top-down room
         elec = std::make_unique<ElectricSystem>(world, mats, &pool, 2026);
         stream.setElectric(elec.get());
     }

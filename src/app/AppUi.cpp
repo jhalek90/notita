@@ -52,6 +52,7 @@ void App::registerUi() {
     registerSandboxUi();
     registerPlayerUi();
     registerWorldUi();
+    registerTopDownUi(); // AppTopDown.cpp (#483)
     registerGasUi();
     registerFlameUi();
     registerElectricUi();

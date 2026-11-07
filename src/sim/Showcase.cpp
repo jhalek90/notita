@@ -41,7 +41,7 @@ std::uint32_t mix(std::uint32_t h) {
 std::uint32_t hash2(int x, int y) { return mix(static_cast<std::uint32_t>(x) * 0x9E3779B1u ^ mix(static_cast<std::uint32_t>(y) + 0x632BE5ABu)); }
 
 // Layout (world pixels, +y down). The ground's first row is y = 0.
-constexpr int kBoxX0 = -1100, kBoxX1 = 1500, kBoxY0 = -330, kBoxY1 = 300;
+constexpr int kBoxX0 = -1100, kBoxX1 = 1920, kBoxY0 = -330, kBoxY1 = 300;
 constexpr int kBlend = 220;             // px over which the generated surface comes back outside the box
 constexpr int kBX0 = -700, kBX1 = 700;   // building outer walls
 constexpr int kSlab = 12;
@@ -214,6 +214,7 @@ struct ShowcasePainter {
     void room(const char* name, int x0, int y0, int x1, int y1) { s.rooms_.push_back({name, x0, y0, x1, y1}); }
 
     void paint();
+    void topDown();
 };
 
 void ShowcasePainter::paint() {
@@ -590,7 +591,101 @@ void ShowcasePainter::paint() {
         concrete(1424, -172, 1451, -171);
         tree(1472, 66, 22);
     }
+
+    topDown();
     (void)timber;
+}
+
+// #483: the TOP DOWN room. A concrete box past the course whose inside is a
+// FlatRegion: it is seen from above, so gravity points into the screen there.
+// Empty pixels inside are the floor (the app draws them as tiles); solids are
+// things standing on it (walls, a curb, a hut). The door is a 32 px gap in the
+// west wall at ground level, so the player walks in from the side view.
+void ShowcasePainter::topDown() {
+    const int X0 = 1522, X1 = 1877, Y0 = -212, Y1 = 67;   // outer walls
+    const int L = X0 + 8, R = X1 - 8, T = Y0 + 12, B = Y1 - 8; // interior 1530..1869 x -200..59
+    const MaterialId water = id("water"), sand = id("sand"), slate = id("slate"), copper = id("copper");
+    const MaterialId brick = id("firebrick", "basalt"), lamp = id("lamp"), volt = id("volt_cell"), ground = id("ground_rod");
+    concrete(X0, Y0, X1, Y1);
+    air(L, T, R, B);
+    air(X0, -32, L - 1, -1);                               // the door, at ground level
+    sign("TOP DOWN", (X0 + X1) / 2, Y0);
+    room("topdown", L, T, R, B);
+    s.topDownX_ = static_cast<float>(L + 14) + 0.5f;
+    s.topDownY_ = 0.0f;
+
+    // floor lights along the north and south walls (always on)
+    lampLine(L + 60, R - 10, T - 4, 2); // (three in series is too dim to light over this run)
+    lampLine(L + 200, R - 10, B - 12, 2);
+
+    // a sloped gutter under a water tank: dig or burn the timber gate and the water runs
+    // down the slope (its own FlatRegion with a tilt, listed first) and out onto the floor
+    const int g0 = 1546, g1 = 1574, gt = T + 10, gb = -44;
+    concrete(g0 - 5, gt - 4, g0 - 1, gb);
+    concrete(g1 + 1, gt - 4, g1 + 5, gb);
+    concrete(g0 - 5, gt - 4, g1 + 5, gt - 1);
+    rect(water, g0, gt, g1, gt + 15);
+    beam(g0, gt + 16, g1, gt + 18);
+    // the pond: water inside a slate curb
+    {
+        const int cx = 1655, cy = -140, rx = 44, ry = 28;
+        for (int y = cy - ry - 4; y <= cy + ry + 4; ++y)
+            for (int x = cx - rx - 4; x <= cx + rx + 4; ++x) {
+                const float fx = static_cast<float>(x - cx) / static_cast<float>(rx), fy = static_cast<float>(y - cy) / static_cast<float>(ry);
+                const float d = fx * fx + fy * fy;
+                const float fo = static_cast<float>(x - cx) / static_cast<float>(rx + 4), fq = static_cast<float>(y - cy) / static_cast<float>(ry + 4);
+                if (d <= 1.0f) put(x, y, water);
+                else if (fo * fo + fq * fq <= 1.0f) put(x, y, slate);
+            }
+    }
+    // a sand pile (from above: a round heap that only moves when pushed)
+    circle(sand, 1640, -20, 22, Showcase::Loose);
+    // a timber hut (walls 3 px, a doorway on its west side) with a table inside
+    {
+        const int hx0 = 1735, hx1 = 1805, hy0 = -82, hy1 = -22;
+        beam(hx0, hy0, hx1, hy0 + 2);
+        beam(hx0, hy1 - 2, hx1, hy1);
+        beam(hx0, hy0, hx0 + 2, hy1, Showcase::Pinned);
+        beam(hx1 - 2, hy0, hx1, hy1, Showcase::Pinned);
+        air(hx0, -60, hx0 + 2, -40);
+        beam(1764, -60, 1782, -48);
+        // igniter: volt cell -> switch (outside, by the doorway) -> thick copper -> a thin
+        // fuse wire along the inside of the south wall (it sparks and lights it) -> ground rod
+        rect(volt, 1712, -18, 1717, -8);
+        rect(copper, 1718, -14, 1723, -12);
+        rect(id("switch_open"), 1724, -16, 1729, -10);
+        rect(copper, 1730, -14, 1745, -12);
+        rect(copper, 1743, -27, 1745, -15);                // through the wall
+        rect(copper, 1746, -25, 1770, -25);                // the fuse (1 px), on the timber
+        rect(copper, 1771, -27, 1793, -25);
+        rect(copper, 1791, -24, 1793, -12);
+        rect(copper, 1794, -14, 1810, -12);
+        rect(ground, 1811, -18, 1816, -8);
+    }
+    // a gas vent: a sealed concrete tank of murk (a heavy gas) with a timber plug in its
+    // west wall. Dig or burn the plug and the murk spreads evenly over the floor; in the
+    // side view it would pool on the ground. The inside is on the gas grid's 4 px cells
+    // so the walls hold it.
+    {
+        const int x0 = 1816, y0 = -172, x1 = 1859, y1 = -129;
+        concrete(x0, y0, x1, y1);
+        const MaterialId murk = id("murk", nullptr);
+        rect(murk != kEmpty ? murk : kEmpty, x0 + 8, y0 + 8, x1 - 8, y1 - 8);
+        beam(x0, -156, x0 + 7, -145, Showcase::Pinned);
+    }
+    // a lamp behind a switch on the floor by the door
+    rect(volt, L + 20, 34, L + 25, 44);
+    rect(copper, L + 26, 38, L + 40, 39);
+    rect(id("switch_open"), L + 41, 35, L + 46, 42);
+    rect(copper, L + 47, 38, L + 70, 39);
+    rect(lamp, L + 71, 32, L + 86, 45);
+    rect(copper, L + 87, 38, L + 100, 39);
+    rect(ground, L + 101, 34, L + 106, 44);
+    // a crate: a live timber block (a rigid body at once) that slides when blasted or shoved
+    beam(1700, 10, 1715, 25, Showcase::Live);
+
+    s.flat_.push_back({g0, gt, g1, gb, 0, 24});            // the gutter: downhill to the south
+    s.flat_.push_back({L, T, R, B, 0, 0});                 // the room: a level floor
 }
 
 Showcase::Showcase(const MaterialRegistry& mats) : mats_(mats) {

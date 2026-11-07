@@ -12,6 +12,7 @@
 // Solids are pinned (kAuxPinned: scene geometry, never a rigid body);
 // powders and liquids are free and settle when the chunk first runs.
 #include "Chunk.h"
+#include "Gravity.h"
 #include "Material.h"
 
 #include <cstdint>
@@ -30,6 +31,9 @@ public:
     virtual const char* name() const = 0;                  // stored in saves ("" = none)
     virtual int surface(int x, int generated) const = 0;   // the column's surface (flatten a site)
     virtual bool cellAt(int x, int y, Cell& out) const = 0; // true: use `out` instead of the generated cell
+    // #483: areas seen from above (gravity into the screen). Whoever sets the
+    // overlay copies these into World::gravity().
+    virtual std::vector<FlatRegion> flatRegions() const { return {}; }
 };
 
 struct WorldGenParams {

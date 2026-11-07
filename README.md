@@ -70,6 +70,8 @@ build\notita.exe --scene circuits          :: electricity: lamp, heater, brine t
 build\notita.exe --scene circuits --autoplay :: closes every switch and calls lightning (an electricity smoke run)
 build\notita.exe --scene showcase --autoplay :: walks up to the gallery and the demolition hall, closes every switch in reach
 build\notita.exe --scene showcase --at 600,0 --autoplay :: stands in the furnace room and closes the switches (room screenshots)
+build\notita.exe --scene topdown  :: the showcase, starting in the TOP DOWN room (gravity into the screen)
+build\notita.exe --scene topdown --autoplay :: drains the gutter, walks through the sand, blasts the crate, opens the murk tank
 build\notita.exe --scene empty
 build\notita.exe --gas-selftest   :: GPU gas solver vs the CPU reference, prints PASS/FAIL
 build\notita.exe --light-selftest :: GPU light pass vs the CPU reference, prints PASS/FAIL
@@ -151,6 +153,7 @@ src/sim/      simulation core, no SDL dependency (tests and bench link only this
   Player.*      phase 5 player: capsule movement, damage, inventory, dig/place and the movement tools
   WorldGen.*    phase 6 procedural world: every pixel a pure function of (seed, x, y); WorldOverlay hook
   Showcase.*    the showcase building: a WorldOverlay raster laid over the generated world
+  Gravity.h     top-down regions (FlatRegion): areas seen from above, gravity into the screen
   ChunkCodec.*  phase 6 palette + RLE byte-plane encoding of chunk cells and gas cells
   Streamer.*    phase 6 awake window, chunk sleep/wake with every subsystem, save files
   Electric.*    electricity: potential solve over conductive pixels, heating, lamps, sparks, electrolysis, lightning
@@ -600,6 +603,45 @@ surface is flat at y 0 under the site and blends back into the generated hills
 over 220 px. Chunks stream, sleep and save like the rest of the world; save
 files (version 3) name the overlay, and loading a showcase save switches the
 generator back to it before anything new is generated.
+
+## The top-down room
+
+Past the course, east of the building, a concrete box with TOP DOWN over it
+is seen from above: inside it gravity points into the screen instead of down.
+Walk in through the door in its west wall (or `--scene topdown`, or the
+menu's World tab: Top-down room, "Go to the top-down room").
+
+![The TOP DOWN room: gutter and tank, pond, murk tank, hut, sand pile, crate](docs/topdown/room.png)
+![After the smoke run: the gutter drained onto the floor, a path pushed through the sand, the crate blasted south, the hut burning, the murk out of its tank](docs/topdown/demo.png)
+
+- The player walks in 8 directions (WASD), can't jump, wades through water,
+  and walking into sand shoves it out of the way (a crate gets pushed).
+- Powders lie where they are until something gives them speed (a blast, the
+  wind, a shove, landing debris), then slide to a stop.
+- Liquids don't fall. They hold together as puddles (an edge pixel moves to
+  where it has more liquid or wall around it, and a hole in a puddle is filled
+  from behind), run down a sloped floor, and fan out when they come off one:
+  dig the timber gate of the tank at the top of the gutter (the gutter is
+  tilted to the south) and the water runs down it and spreads over the floor.
+- Gases have no buoyancy: CA gas pixels wander any way, and the gas grid adds
+  no lift in the room's cells. Dig the murk tank's timber plug and the heavy
+  gas spreads over the whole floor instead of pooling.
+- Fire spreads across the floor: the switch by the hut's doorway sparks a fuse
+  wire along its south wall; flames flicker any way and blasts have no lift.
+- Rigid bodies lose gravity there and slide with floor friction; a body on the
+  floor stays a body, so the next push slides it again.
+- Also in the room: a pond in a slate curb, a lamp behind a switch by the door,
+  floor lights along two walls. The floor (empty pixels) is drawn as tiles.
+
+How it works: `World::gravity()` holds a list of `FlatRegion`s (world pixel
+rects, the first match wins, each with an optional floor slope). A
+`WorldOverlay` lists its regions and whoever sets the overlay copies them in,
+so they stream and save with the scene for free. The CA asks per pixel (only
+in chunks a region touches), the gas solver gets the regions as grid-cell
+rects (CPU and gas.hlsl both skip buoyancy there), bodies, particles and the
+player ask at their centre. Mass, heat and determinism rules are unchanged
+(`notita_tests topdown`). In the menu's World tab, Top-down room, "Gravity
+into the screen there" turns the regions off to compare with the side view.
 
 ## Benchmark
 

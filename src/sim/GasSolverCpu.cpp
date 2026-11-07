@@ -1,7 +1,7 @@
 // CPU reference for the gas grid math. The GPU version (src/app/shaders/
 // gas.hlsl) runs the same kernels in the same order; keep them in step.
 //   1. curl       cell-centred vorticity
-//   2. forces     buoyancy (heat + lightness) and vorticity confinement, damping
+//   2. forces     buoyancy (heat + lightness; none in top-down cells, #483) and vorticity confinement, damping
 //   3. advect     semi-Lagrangian advection of u and v
 //   4. divergence of the advected field minus the expansion source
 //   5. jacobi     pressure iterations (Neumann walls at obstacles)
@@ -122,6 +122,7 @@ void CpuGasSolver::solve(GasFields& f, const GasSolveParams& sp) {
     // 2. forces (each face owns its write; reads only curl / mass / heat)
     auto buoyancy = [&](int i, int j) {
         const int c = j * w + i;
+        if (sp.flatCount > 0 && sp.flatCell(i, j)) return 0.0f; // #483: seen from above, nothing rises
         const float cap = f.capacity(c, sp);
         float b = sp.buoyancyHeat * (f.heat[c] / cap);
         const float perPx = 1.0f / (std::max(f.open[c], 1.0f / kGasCellPx) * kGasCellPx * kGasMassOne);

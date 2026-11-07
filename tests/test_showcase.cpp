@@ -60,6 +60,7 @@ struct ShowRig {
         gen = std::make_unique<WorldGen>(mats, seed);
         if (overlay) gen->setOverlay(show.get());
         world = std::make_unique<World>(0, 0, sp.chunksW, sp.chunksH);
+        if (overlay) world->gravity().set(show->flatRegions()); // #483: the top-down room
         pool = std::make_unique<ThreadPool>(4);
         sim = std::make_unique<Simulator>(*world, mats, pool.get(), seed);
         sim->params().reactions = false;
@@ -86,8 +87,8 @@ struct ShowRig {
     }
     void hookOverlay() {
         stream->setOverlayHook([this](const std::string& name) {
-            if (name == show->name()) gen->setOverlay(show.get());
-            else if (name.empty()) gen->setOverlay(nullptr);
+            if (name == show->name()) { gen->setOverlay(show.get()); world->gravity().set(show->flatRegions()); }
+            else if (name.empty()) { gen->setOverlay(nullptr); world->gravity().clear(); }
             else return false;
             return true;
         });
@@ -294,4 +295,90 @@ TEST_CASE(showcase_save_needs_and_restores_the_overlay) {
     // chunks first seen after the load still get the building
     c.stream->shiftTo(c.stream->windowX() + 12, c.stream->windowY());
     CHECK(c.world->material(830, -100) == mats.idOf("concrete")); // the jet tower
+}
+
+TEST_CASE(showcase_topdown_room_lies_still_burns_and_keeps_mass) {
+    // #483: the TOP DOWN room past the course: a FlatRegion (gravity into the screen)
+    MaterialRegistry mats;
+    if (!loadGameMaterials(mats)) return;
+    ShowRig r(mats);
+    CHECK(r.show->room("topdown") != nullptr);
+    CHECK_EQ(r.world->gravity().regions().size(), std::size_t{2}); // the gutter (sloped) and the room
+    r.stream->start(1700, -60);
+    auto count = [&](const char* name, int x0, int y0, int x1, int y1) {
+        const MaterialId m = mats.idOf(name);
+        int n = 0;
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) n += r.world->material(x, y) == m;
+        return n;
+    };
+    for (int i = 0; i < 5; ++i) r.tick();
+    const long long m0 = r.conserved();
+    const int pond0 = count("water", 1607, -172, 1703, -108), sand0 = count("sand", 1610, -50, 1670, 10);
+    const int tank0 = count("water", 1546, -190, 1574, -175), timber0 = count("timber", 1735, -82, 1805, -22);
+    CHECK(pond0 > 3000);
+    CHECK(sand0 > 1400);
+    CHECK_EQ(r.bodies->stats().bodies, 1); // the crate, lying on the floor
+    // light the hut: its igniter is the switch by the doorway
+    CHECK(r.electric->toggleSwitch(1726, -13, 0) > 0);
+    int drift = 0;
+    for (int i = 0; i < 900; ++i) {
+        r.tick();
+        drift += r.conserved() != m0;
+    }
+    CHECK_EQ(drift, 0);
+    const int pond1 = count("water", 1607, -172, 1703, -108), sand1 = count("sand", 1610, -50, 1670, 10);
+    const int tank1 = count("water", 1546, -190, 1574, -175), timber1 = count("timber", 1735, -82, 1805, -22);
+    std::printf("  top-down room: pond %d -> %d, sand %d -> %d, tank %d -> %d, hut timber %d -> %d, bodies %d, "
+                "lamp px %d\n",
+                pond0, pond1, sand0, sand1, tank0, tank1, timber0, timber1, r.bodies->stats().bodies,
+                r.electric->stats().lit);
+    CHECK_EQ(count("lamp", 1530, -200, 1869, -193), 0);   // the floor lights along the north wall are all on
+    CHECK(count("lamp_lit", 1530, -200, 1869, -193) >= 150);
+    CHECK_EQ(pond1, pond0);                  // nothing falls out of the pond...
+    CHECK_EQ(sand1, sand0);                  // ...or off the sand pile...
+    CHECK_EQ(tank1, tank0);                  // ...and the tank waits behind its gate
+    CHECK(timber1 < timber0 - 40);           // the hut burns
+    CHECK_EQ(r.bodies->stats().bodies, 1);   // the crate stays a body (a push slides it again)
+    // dig the gutter's gate: the water runs down the slope and out over the floor
+    for (int y = -174; y <= -172; ++y)
+        for (int x = 1546; x <= 1574; ++x) r.world->setCell(x, y, Cell{});
+    const long long m1 = r.conserved() ;
+    for (int i = 0; i < 400; ++i) r.tick();
+    CHECK_EQ(r.conserved(), m1);
+    const int out = count("water", 1530, -43, 1600, 59);
+    std::printf("  gutter: %d water px out on the floor after 400 ticks, %d left in the tank\n", out,
+                count("water", 1546, -190, 1574, -175));
+    CHECK(out > tank0 / 2);
+    // the gas vent: dig the murk tank's plug and the murk spreads over the floor without sinking
+    const MaterialId murkId = mats.idOf("murk");
+    int murkK = -1;
+    for (int k = 0; k < r.gas->speciesCount(); ++k)
+        if (r.gas->species(k) == murkId) murkK = k;
+    CHECK(murkK >= 0);
+    if (murkK < 0) return;
+    auto murkIn = [&](int x0, int y0, int x1, int y1) {
+        const GasFields& g = r.gas->fields();
+        double m = 0;
+        for (int j = 0; j < g.h; ++j)
+            for (int i = 0; i < g.w; ++i) {
+                const int px = r.gas->originX() + i * kGasCell, py = r.gas->originY() + j * kGasCell;
+                if (px >= x0 && px <= x1 && py >= y0 && py <= y1) m += static_cast<double>(g.m(murkK, j * g.w + i));
+            }
+        return m / kGasMassOne;
+    };
+    const double inTank0 = murkIn(1824, -164, 1851, -137);
+    CHECK(r.world->material(1819, -150) == mats.idOf("timber")); // the plug
+    CHECK(inTank0 > 300.0);
+    for (int y = -156; y <= -145; ++y)
+        for (int x = 1816; x <= 1823; ++x) r.world->setCell(x, y, Cell{});
+    const long long m2 = r.conserved();
+    for (int i = 0; i < 600; ++i) r.tick();
+    CHECK_EQ(r.conserved(), m2);
+    const double inTank1 = murkIn(1824, -164, 1851, -137);
+    const double north = murkIn(1530, -200, 1815, -151), south = murkIn(1530, -150, 1815, -101); // two bands of the same size
+    std::printf("  murk: %.0f in the tank -> %.0f; out on the floor %.0f north of the plug, %.0f south of it\n", inTank0, inTank1,
+                north, south);
+    CHECK(inTank1 < inTank0 * 0.8);          // it got out...
+    CHECK(north > 0.3 * (north + south));    // ...and spread both ways (side view, it would all sink)
 }

@@ -44,9 +44,11 @@ void ParticleSystem::add(const Particle* p, std::size_t n) {
 
 void ParticleSystem::move(Particle& p, const Rng&) {
     const Material& m = mats_[p.cell.material];
-    p.vy += params_.gravity * m.gravity;
-    p.vx *= 1.0f - params_.drag;
-    p.vy *= 1.0f - params_.drag;
+    const bool flat = world_.gravity().flat(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)));
+    if (!flat) p.vy += params_.gravity * m.gravity;
+    const float drag = flat ? params_.flatDrag : params_.drag;
+    p.vx *= 1.0f - drag;
+    p.vy *= 1.0f - drag;
     if (gas_ && params_.gasDrag > 0.0f) {
         const GasFields& f = gas_->fields();
         const int i = static_cast<int>(std::floor(p.x)) - gas_->originX(), j = static_cast<int>(std::floor(p.y)) - gas_->originY();
@@ -89,7 +91,7 @@ void ParticleSystem::move(Particle& p, const Rng&) {
     }
     if (!blocked && speed < params_.settleSpeed) {
         const Cell* below = world_.cell(cx, cy + 1);
-        if (!below || below->material != kEmpty) blocked = true;
+        if (flat || !below || below->material != kEmpty) blocked = true; // #483: seen from above it lands on the floor
     }
     if (p.age > params_.maxAge) blocked = true;
     if (blocked) p.rest = 1; else p.rest = 0;
@@ -114,7 +116,8 @@ bool ParticleSystem::settle(Particle& p, int cx, int cy) {
     c.temperature = std::clamp(c.temperature + airCap * (dst->temperature - kAmbientTemp) / m.heatCapacity, kMinTemp, kMaxTemp);
     const float vmax = static_cast<float>(m.maxFall);
     c.vx = static_cast<std::int16_t>(std::clamp(p.vx, -vmax, vmax) * kVelOne);
-    c.vy = static_cast<std::int16_t>(std::clamp(p.vy, 0.0f, vmax) * kVelOne); // the automaton only carries falling speed
+    // the automaton only carries falling speed (#483: in a top-down region, speed along the floor)
+    c.vy = static_cast<std::int16_t>(std::clamp(p.vy, world_.gravity().flat(sx, sy) ? -vmax : 0.0f, vmax) * kVelOne);
     *dst = c;
     world_.wake(sx, sy);
     return true;

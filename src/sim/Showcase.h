@@ -9,6 +9,11 @@
 //   basement:     the cistern under the fluids room
 //   outside:      a cave down to a water table (west), a movement course with
 //                 a jet tower, a grapple gantry and a raft pond (east)
+//   past the course: the TOP DOWN room (#483), a walled box seen from above
+//                 (a FlatRegion: gravity into the screen) with a tiled floor, a
+//                 pond, a sand pile, a timber hut with an igniter, a murk tank with a plug,
+//                 a sloped gutter under a water tank, a lamp behind a switch and
+//                 a crate; its door is in the west wall at ground level
 //
 // It is a WorldOverlay: every pixel is a pure function of (x, y) (a raster
 // built once in the constructor), so the building streams, sleeps and saves
@@ -30,10 +35,14 @@ public:
     const char* name() const override { return "showcase"; }
     int surface(int x, int generated) const override;
     bool cellAt(int x, int y, Cell& out) const override;
+    std::vector<FlatRegion> flatRegions() const override { return flat_; }
 
     // The player's spawn point (feet), in the lobby.
     float spawnX() const { return spawnX_; }
     float spawnY() const { return spawnY_; }
+    // #483: where --scene topdown puts the player (feet), just inside the room's door.
+    float topDownX() const { return topDownX_; }
+    float topDownY() const { return topDownY_; }
 
     struct Room { std::string name; int x0, y0, x1, y1; }; // interior, world pixels
     const std::vector<Room>& rooms() const { return rooms_; }
@@ -57,6 +66,8 @@ private:
     std::vector<std::uint8_t> hold_;
     std::vector<Room> rooms_;
     float spawnX_ = 0, spawnY_ = 0;
+    float topDownX_ = 0, topDownY_ = 0;
+    std::vector<FlatRegion> flat_;
     friend struct ShowcasePainter;
 };
 

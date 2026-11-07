@@ -33,6 +33,7 @@ struct ParticleParams {
     float gasDrag = 0.12f;          // per tick, pull towards the gas grid's velocity (0 = ignore the grid)
     float maxSpeed = 14.0f;         // px per tick (stays inside what a cell can carry)
     float settleSpeed = 0.6f;       // slower than this and blocked below: settle
+    float flatDrag = 0.08f;         // #483: in a top-down region there is no gravity, the spray skids to a stop and lands
     int   maxAge = 900;             // ticks; older particles settle at the first chance
     int   maxCount = 200000;        // launches beyond this are refused (the pixel stays put)
 };
