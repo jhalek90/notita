@@ -1057,8 +1057,11 @@ int App::gasSelfTest() {
     GasFields a = gas_->fields();
     GasFields b = a;
     CpuGasSolver cpu(pool_.get());
-    const GasSolveParams sp = gas_->solveParams();
-    auto total = [](const GasFields& f) { long long s = 0; for (int m : f.mass) s += m; return s; };
+    GasSolveParams sp = gas_->solveParams();
+    // #483: the left half as a top-down region, so both kernels' buoyancy skip is compared too
+    sp.flatCount = 1;
+    sp.flat[0][0] = 0; sp.flat[0][1] = 0; sp.flat[0][2] = a.w / 2 - 1; sp.flat[0][3] = a.h - 1;
+    auto total =[](const GasFields& f) { long long s = 0; for (int m : f.mass) s += m; return s; };
     const long long m0 = total(a);
     double gpuMs = 0;
     const int steps = 30;
