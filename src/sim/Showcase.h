@@ -11,7 +11,7 @@
 //                 a jet tower, a grapple gantry and a raft pond (east)
 //   past the course: the TOP DOWN room (#483), a walled box seen from above
 //                 (a FlatRegion: gravity into the screen) with a tiled floor, a
-//                 pond, a sand pile, a timber hut with an igniter, a steam vent,
+//                 pond, a sand pile, a timber hut with an igniter, a murk tank with a plug,
 //                 a sloped gutter under a water tank, a lamp behind a switch and
 //                 a crate; its door is in the west wall at ground level
 //

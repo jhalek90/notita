@@ -641,13 +641,18 @@ private:
         return tm.kind == MaterialKind::Gas && t->material != m.id;
     }
 
+    // Liquid and solid pixels around (x, y): a liquid wets solids, so a puddle hugs its
+    // walls (and a pool its electrodes) the way it holds to itself. The moves below only
+    // ever raise the number of such contacts, which is what makes a puddle settle.
     int liquidAround(int x, int y, int skipX, int skipY) {
         int n = 0;
         for (int dy = -1; dy <= 1; ++dy)
             for (int dx = -1; dx <= 1; ++dx) {
                 if ((dx == 0 && dy == 0) || (x + dx == skipX && y + dy == skipY)) continue;
                 const Cell* t = at(x + dx, y + dy);
-                if (t && mats_[t->material].kind == MaterialKind::Liquid) ++n;
+                if (!t || (t->flags & kFlagBody)) continue;
+                const MaterialKind k = mats_[t->material].kind;
+                if (k == MaterialKind::Liquid || k == MaterialKind::Solid) ++n;
             }
         return n;
     }
@@ -773,6 +778,35 @@ private:
         // it never climbs: it spreads across and down the fall line.
         static constexpr int kDx[4] = {1, -1, 0, 0}, kDy[4] = {0, 0, 1, -1};
         const int first = static_cast<int>(rng_.below(4));
+        // pressure first: an open pixel with liquid round it (a hole or a gap a dig, a split
+        // or a blast left in a puddle) is filled from behind. The line of liquid behind this
+        // pixel shifts one step into it, so the hole moves up to 12 px back towards the
+        // puddle's edge, but only if it ends up with less liquid round it than it has now
+        // (the puddle's surface gets shorter, so this always settles).
+        for (int k = 0; k < 4; ++k) {
+            const int d = (first + k) & 3;
+            const int hx = x + kDx[d], hy = y + kDy[d];
+            if (!flatOpen(m, at(hx, hy))) continue;
+            const int around = liquidAround(hx, hy, hx, hy);
+            if (around < 3) continue;
+            int n = 0;
+            while (n < 12) {
+                const Cell* b = at(x - kDx[d] * (n + 1), y - kDy[d] * (n + 1));
+                if (!b || b->stamp == stamp_ || (b->flags & kFlagBody) || mats_[b->material].kind != MaterialKind::Liquid) break;
+                ++n;
+            }
+            const int bx = x - kDx[d] * n, by = y - kDy[d] * n;
+            const int after = liquidAround(bx, by, bx, by) + (n == 0 ? 1 : 0); // the old hole is liquid then
+            if (after >= around) continue;
+            int px = hx, py = hy;
+            for (int i = 0; i <= n; ++i) {
+                const int qx = x - kDx[d] * i, qy = y - kDy[d] * i;
+                swapCells(at(px, py), px, py, at(qx, qy), qx, qy);
+                px = qx;
+                py = qy;
+            }
+            return;
+        }
         int best = -1, bestD = -1;
         for (int k = 0; k < 4; ++k) {
             const int d = (first + k) & 3;

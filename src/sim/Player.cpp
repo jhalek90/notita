@@ -300,6 +300,33 @@ void Player::shovePowder() {
     }
 }
 
+// #483: on a floor seen from above, walking into a rigid body pushes it (an
+// impulse at the contact, along the walk), so a crate can be shoved around.
+void Player::pushBodies(float wantX, float wantY) {
+    if (!bodies_) return;
+    const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
+    const int H = params_.height, hw = params_.halfWidth;
+    auto push = [&](int wx, int wy, float dx, float dy) {
+        const Cell* c = world_.cell(wx, wy);
+        if (!c || !(c->flags & kFlagBody)) return false;
+        const int id = bodies_->bodyAt(wx, wy);
+        if (!id) return false;
+        const float k = params_.bodyPush * massUnits();
+        bodies_->applyImpulse(id, static_cast<float>(wx) + 0.5f, static_cast<float>(wy) + 0.5f, dx * k, dy * k);
+        return true;
+    };
+    if (std::abs(wantX) > 0.1f) {
+        const int sx = wantX > 0 ? ix + hw + 1 : ix - hw - 1;
+        for (int r = 0; r < H; r += 3)
+            if (push(sx, iy - H + r, wantX > 0 ? 1.0f : -1.0f, 0.0f)) break;
+    }
+    if (std::abs(wantY) > 0.1f) {
+        const int sy = wantY > 0 ? iy : iy - H - 1;
+        for (int dx = -hw; dx <= hw; dx += 2)
+            if (push(ix + dx, sy, 0.0f, wantY > 0 ? 1.0f : -1.0f)) break;
+    }
+}
+
 void Player::step(const PlayerInput& in) {
     ++tick_;
     stats_.dug = stats_.placed = stats_.jetMass = 0;
@@ -441,9 +468,13 @@ void Player::step(const PlayerInput& in) {
     }
     const float landing = vy_;
     const bool wasGrounded = grounded_;
+    const float wantX = vx_, wantY = vy_;
     moveX(vx_ + carry);
     moveY(vy_);
-    if (flat_) shovePowder();
+    if (flat_) {
+        shovePowder();
+        pushBodies(wantX, wantY);
+    }
 
     const int ix = static_cast<int>(std::floor(x_)), iy = static_cast<int>(std::floor(y_));
     grounded_ = flat_ || collides(ix, iy + 1); // #483: on a floor seen from above the player always stands

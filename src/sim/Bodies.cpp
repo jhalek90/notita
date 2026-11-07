@@ -872,6 +872,7 @@ void BodySystem::step() {
         const bool flat = world_.gravity().flat(static_cast<int>(std::floor(impl_->toPx(com.x))),
                                                                         static_cast<int>(std::floor(impl_->toPx(com.y))));
         b2Body_SetGravityScale(bid, flat ? 0.0f : 1.0f);
+        b.onFloor = flat;
         applyGas(b);
         if (flat) applyFloor(b);
         else applyLiquid(b);
@@ -907,7 +908,7 @@ void BodySystem::step() {
             shatter(b); // replaces this entry; fragments are appended
             continue;
         }
-        b.asleep = (b.awake || b.floats) ? 0 : b.asleep + 1; // a floating body bobs; it never freezes into pixels
+        b.asleep = (b.awake || b.floats || b.onFloor) ? 0 : b.asleep + 1; // a floating body bobs; it never freezes into pixels
         if (b.asleep >= params_.freezeAfter) {
             freeze(b);
             continue;

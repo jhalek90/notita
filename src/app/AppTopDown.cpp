@@ -67,22 +67,23 @@ void App::drawTopDownUi() {
         else spawnPlayer(showcase_->topDownX(), showcase_->topDownY(), true);
     }
     ImGui::TextDisabled("Inside: WASD walks 8 ways (no jumping), walking shoves sand,");
-    ImGui::TextDisabled("dig/place as usual, E flips the hut igniter and the lamp.");
+    ImGui::TextDisabled("dig/place as usual, E flips the lamp and the hut igniter; dig the gas tank's plug.");
 }
 
-// --scene topdown --autoplay: up the gutter to dig its gate, back down, east
-// through the sand pile, a charge by the crate, then on to the hut (whose
-// igniter autoShowcase closes at t = 60 with every other switch).
+// --scene topdown --autoplay: up the gutter to dig a hole in its gate, back
+// down ahead of the water, east through the sand pile, a charge by the crate,
+// then north past the hut (whose igniter autoShowcase closes at t = 60 with
+// every other switch) to watch it burn.
 void App::autoTopDown(PlayerInput& in, int f) {
-    const float px = player_->x(), py = player_->centreY();
+    const float x = player_->x(), y = player_->y();
     if (f < 14) in.move = 1.0f;
     else if (f < 120) in.moveY = -1.0f;
-    else if (f < 200) { in.tool = Tool::Dig; in.use = true; in.aimX = px; in.aimY = py - 48.0f; }
-    else if (f < 320) in.moveY = 1.0f;
-    else if (f < 430) in.move = 1.0f;
-    else if (f == 430) { in.tool = Tool::Blast; usePressed_ = true; in.aimX = 1704.0f; in.aimY = 6.0f; }
-    else if (f < 470) {}
-    else if (f < 520) in.move = 1.0f;
+    else if (f < 140) { in.tool = Tool::Dig; in.use = true; in.aimX = 1560.0f; in.aimY = -173.0f; } // the gutter's gate
+    else if (f < 330) in.moveY = y < -1.0f ? 1.0f : 0.0f;
+    else if (f < 460) in.move = x < 1688.0f ? 1.0f : 0.0f;
+    else if (f == 460) { in.tool = Tool::Blast; usePressed_ = true; in.aimX = 1707.0f; in.aimY = 6.0f; }
+    else if (f < 480) {}
+    else if (f < 560) in.moveY = y > -86.0f ? -1.0f : 0.0f;
 }
 
 } // namespace notita

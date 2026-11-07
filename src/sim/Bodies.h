@@ -65,6 +65,7 @@ struct RigidBody {
     long long mass = 0;         // sum of Material::mass over the pixels
     int   submerged = 0;        // pixels below the waterline of the liquid it touches (phase 5 buoyancy)
     bool  floats = false;       // lighter than that liquid: it stays a body instead of freezing into pixels
+    bool  onFloor = false;      // #483: lies on a top-down floor (no gravity, friction); stays a body so a push slides it again
 
     // world position of a pixel centre
     void toWorld(const BodyPixel& p, float& wx, float& wy) const {

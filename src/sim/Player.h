@@ -115,6 +115,7 @@ struct PlayerParams {
     // #483: in a top-down region (World::gravity()) the player walks in 8 directions
     // with no gravity and no jumping, and shoves powder out of its way
     int   shoveReach = 10;        // px: how far a shoved grain may be pushed to find room
+    float bodyPush = 0.15f;       // share of the player's momentum per tick pushed into a body it walks into
 };
 
 struct PlayerInput {
@@ -213,6 +214,7 @@ private:
     void moveX(float dx);
     void moveY(float dy);
     void shovePowder();               // #483: top-down, grains in the capsule are pushed out ahead of it
+    void pushBodies(float wantX, float wantY); // #483: top-down, a body in the way is pushed along
     void hurt(float hp);
     void useTools(const PlayerInput& in);
     void dig(const PlayerInput& in, float tx, float ty);

@@ -615,7 +615,7 @@ void ShowcasePainter::topDown() {
     s.topDownY_ = 0.0f;
 
     // floor lights along the north and south walls (always on)
-    lampLine(L + 60, R - 10, T - 4, 3);
+    lampLine(L + 60, R - 10, T - 4, 2); // (three in series is too dim to light over this run)
     lampLine(L + 200, R - 10, B - 12, 2);
 
     // a sloped gutter under a water tank: dig or burn the timber gate and the water runs
@@ -662,21 +662,16 @@ void ShowcasePainter::topDown() {
         rect(copper, 1794, -14, 1810, -12);
         rect(ground, 1811, -18, 1816, -8);
     }
-    // a steam vent: a firebrick ring (open to the north) round a pool with a heater coil
-    // through it, always powered: the steam drifts across the floor instead of rising
+    // a gas vent: a sealed concrete tank of murk (a heavy gas) with a timber plug in its
+    // west wall. Dig or burn the plug and the murk spreads evenly over the floor; in the
+    // side view it would pool on the ground. The inside is on the gas grid's 4 px cells
+    // so the walls hold it.
     {
-        const int cx = 1835, cy = -150;
-        for (int y = cy - 14; y <= cy + 14; ++y)
-            for (int x = cx - 14; x <= cx + 14; ++x) {
-                const int d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-                if (d2 <= 9 * 9) put(x, y, water);
-                else if (d2 <= 13 * 13 && !(y < cy - 6 && std::abs(x - cx) <= 4)) put(x, y, brick, Showcase::Pinned, Panel);
-            }
-        rect(id("heater_coil"), cx - 8, cy - 1, cx + 8, cy + 1);
-        rect(copper, cx - 14, cy - 1, cx - 9, cy + 1);
-        rect(volt, cx - 20, cy - 5, cx - 15, cy + 5);
-        rect(copper, cx + 9, cy - 1, cx + 14, cy + 1);
-        rect(ground, cx + 15, cy - 5, cx + 20, cy + 5);
+        const int x0 = 1816, y0 = -172, x1 = 1859, y1 = -129;
+        concrete(x0, y0, x1, y1);
+        const MaterialId murk = id("murk", nullptr);
+        rect(murk != kEmpty ? murk : kEmpty, x0 + 8, y0 + 8, x1 - 8, y1 - 8);
+        beam(x0, -156, x0 + 7, -145, Showcase::Pinned);
     }
     // a lamp behind a switch on the floor by the door
     rect(volt, L + 20, 34, L + 25, 44);
