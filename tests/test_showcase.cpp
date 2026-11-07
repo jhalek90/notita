@@ -368,6 +368,7 @@ TEST_CASE(showcase_topdown_room_lies_still_burns_and_keeps_mass) {
         return m / kGasMassOne;
     };
     const double inTank0 = murkIn(1824, -164, 1851, -137);
+    CHECK(r.world->material(1819, -150) == mats.idOf("timber")); // the plug
     CHECK(inTank0 > 300.0);
     for (int y = -156; y <= -145; ++y)
         for (int x = 1816; x <= 1823; ++x) r.world->setCell(x, y, Cell{});

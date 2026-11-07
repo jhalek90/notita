@@ -73,7 +73,7 @@ void App::drawTopDownUi() {
 // --scene topdown --autoplay: up the gutter to dig a hole in its gate, back
 // down ahead of the water, east through the sand pile, a charge by the crate,
 // then north past the hut (whose igniter autoShowcase closes at t = 60 with
-// every other switch) to watch it burn.
+// every other switch) and east to dig the murk tank's plug.
 void App::autoTopDown(PlayerInput& in, int f) {
     const float x = player_->x(), y = player_->y();
     if (f < 14) in.move = 1.0f;
@@ -84,6 +84,9 @@ void App::autoTopDown(PlayerInput& in, int f) {
     else if (f == 460) { in.tool = Tool::Blast; usePressed_ = true; in.aimX = 1707.0f; in.aimY = 6.0f; }
     else if (f < 480) {}
     else if (f < 560) in.moveY = y > -86.0f ? -1.0f : 0.0f;
+    else if (f < 660) in.move = x < 1790.0f ? 1.0f : 0.0f;
+    else if (f < 700) in.moveY = y > -128.0f ? -1.0f : 0.0f;
+    else if (f < 740) { in.tool = Tool::Dig; in.use = true; in.aimX = 1819.0f; in.aimY = -150.0f; } // the murk tank's plug
 }
 
 } // namespace notita
